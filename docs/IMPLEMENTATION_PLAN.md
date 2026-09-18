@@ -229,8 +229,8 @@ object on the way out. It never edits `messages` or `tools`.
 | Prices, cache read and write rates, context windows, tool and vision support | LiteLLM | `get_model_info` and `cost_per_token` |
 | Token counts | LiteLLM | `token_counter` |
 | Cost per request in logs | LiteLLM | `response_cost` in the success callback |
-| Conversation id when the client sends a session header | LiteLLM | `data["litellm_session_id"]` |
-| Conversation id when the client sends nothing | Router | SHA-256 of system prompt plus first user message plus the `user` field; stable because served history is append-only |
+| Conversation id when the client identifies itself | LiteLLM | `data["litellm_session_id"]`, resolved from `x-litellm-session-id` / `x-litellm-trace-id`, any `x-<vendor>-session-id` header, Claude Code's `metadata.user_id` (`…_session_<uuid>`), Codex's `session-id` / `thread-id`, and opencode's `x-session-id` |
+| Conversation id when nothing identifies the client | Router | Response chaining, then a content hash; see section 3.5 |
 | Reading the request for signals | Router | Pure functions over `data["messages"]` and `data["tools"]` |
 | Building Jev's state and asking Jev | Router | `StateBuilder`, `JevJudge` |
 | Remembering the incumbent and cache state per conversation | Router | `CacheLedger` over LiteLLM's `DualCache` |
@@ -443,6 +443,67 @@ model has no reasoning chain. Keeping the numbers in code makes every
 decision reproducible from the log. A direct `choice` over tiers stays
 available as an alternative judge for the eval comparison.
 
+### 3.5 Coding-agent harnesses (Claude Code, Codex, opencode)
+
+These work through the same proxy with no router changes, and they are the
+best fit for the design: their traffic is dominated by tool loops, where the
+fast path keeps the incumbent and never calls Jev, so Jev is consulted only
+at human turns and the provider cache is protected across every agentic
+loop.
+
+**Pointing a harness at the router.** Claude Code speaks Anthropic's Messages
+API and takes a base URL, so it needs only environment variables: the
+Anthropic base URL set to the proxy, the auth token set to a LiteLLM key,
+and the model set to `jev-auto`. Its background utility calls (the ones it
+sends to Haiku by default) are pointed at the `haiku` deployment directly
+so they bypass routing. Codex uses the Responses API with a base URL
+override in the same way. Exact variable names follow each harness's
+current docs and are recorded in `deploy/README.md` during phase 0.
+
+**Conversation identity without a header.** The premise that harnesses do
+not publish an id is mostly untrue: Claude Code sends a session uuid inside
+`metadata.user_id`, and LiteLLM's pre-call utilities already parse it, along
+with Codex's and opencode's headers, into `data["litellm_session_id"]`. The
+router resolves identity in this order:
+
+1. **LiteLLM's resolved session id**, when it came from the client. LiteLLM
+   generates a random one when nothing was sent and marks that case in
+   metadata, so the router can tell the two apart.
+2. **Response chaining.** After each response the router stores a
+   fingerprint of what it served (the `tool_use` ids in the assistant
+   message, which are unique per response and echoed back verbatim by every
+   harness; a hash of the text when there are no tool calls) mapped to the
+   conversation id. On the next request the last assistant message in the
+   history is fingerprinted and looked up. This identifies a conversation by
+   the same prefix-continuity the provider cache uses, and works for any
+   client with no cooperation at all.
+3. **Content hash** of the first user message, for a first turn or a
+   history the router has never seen.
+
+**Threads inside one session.** A Claude Code session runs subagents whose
+requests carry the same session id but a different history, and they must
+not share a ledger entry: their incumbent and cache state differ. The ledger
+key is therefore `session_id:thread_hash`, where the thread hash is the
+first user message's hash. For an ordinary app with one thread the suffix
+is constant and changes nothing.
+
+**Compaction.** When a harness compacts its context it rewrites the history.
+The provider cache is lost at that point regardless of the router, and the
+thread hash changes, so the router starts a fresh thread: no cache credit,
+a fresh quality-and-price decision. That is the truthful state. Routing
+history from before the compaction is lost with it, which is acceptable.
+
+**Things the phase 0 spike checks for harness traffic.** Claude Code places
+its own `cache_control` markers, and Anthropic allows at most four
+breakpoints per request, so LiteLLM's injection points must not push a
+request over the limit: verify LiteLLM skips injection when markers are
+present, else serve harness traffic from deployments without injection
+points. Claude Code also sends `anthropic-beta` headers; confirm they are
+forwarded on Anthropic tiers and dropped cleanly when a turn is bridged to
+a GPT-5.6 tier. Bridging Claude Code to an OpenAI model is a documented
+LiteLLM use case, but its quality on long tool loops is a phase 2 eval
+item, not an assumption.
+
 ## 4. Delivery phases
 
 ### Phase 0: LiteLLM spike (about 1 day)
@@ -458,6 +519,11 @@ available as an alternative judge for the eval comparison.
   an Anthropic-format request rewritten to a GPT-5.6 tier is bridged by
   LiteLLM, and effort is honoured via `output_config` (Anthropic tiers) or
   bridged to `reasoning_effort` (OpenAI tiers).
+- Claude Code pointed at the proxy with `jev-auto`: confirm the session id
+  is resolved from its metadata, tool-loop turns take the fast path, its own
+  `cache_control` markers coexist with LiteLLM's injection points under the
+  four-breakpoint limit, and beta headers are handled on both providers.
+  Record the environment variables in `deploy/README.md`.
 - A script that sends two identical requests per tier and asserts
   `prompt_tokens_details.cached_tokens > 0` on the second, for Anthropic and
   OpenAI, and that `response_cost` arrives in the success callback. Any tier
@@ -541,6 +607,8 @@ docs/
 | `/v1/messages` hook coverage regresses in a later LiteLLM version (it was broken before 1.101.0) | The phase 0 spike is the regression test; upgrades only with it green |
 | Effort change loses the messages cache on this path | Modelled in the ledger; measured in phase 2 |
 | No Redis | In-memory `DualCache` still works per process; cold-start routing after restart, never errors |
+| Harness subagents or parallel threads share a session id | Ledger keyed by `session_id:thread_hash` |
+| A harness we have not seen sends no identity at all | Response chaining by `tool_use` ids works for any client that echoes history |
 | Turn gaps longer than the cache TTL make caching moot for that traffic | Expected and handled: no cache term, fresh decision; gap distribution reported in phase 2 to pick TTLs per route |
 
 ## 7. Open questions
