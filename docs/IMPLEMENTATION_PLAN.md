@@ -12,7 +12,7 @@ repo is built yet.
 | Jev access | Keys are available; `typesafe-sdk` against `jev-latest` from day one; tests use a recorded judge, no network |
 | Objective | Quality first, cost second |
 | Conversation identity | `x-litellm-session-id` / `x-litellm-trace-id` header when present, otherwise derived by the router |
-| Privacy | Redacted, minimized transcripts may be sent to TypeSafe |
+| Privacy | Minimized transcripts may be sent to TypeSafe. Redaction is not built in: the serving models already see the full conversation, and masking damages what Jev judges. A `state.filter` hook exists, off by default, for teams with their own policy |
 | Language | Python 3.12 (LiteLLM plugins are Python; the Jev SDK is Python-first) |
 | OpenAI models | The GPT-5.6 stack: `gpt-5.6-luna` (small), `gpt-5.6-terra` (mid), `gpt-5.6-sol` (frontier); all priced in LiteLLM's registry |
 | Deployment | No proxy exists yet; this repo ships a `deploy/docker-compose.yml` with LiteLLM proxy plus Redis, pinned to the version the plan was verified against (`litellm` 1.101.0) |
@@ -275,11 +275,13 @@ by recency:
 Budget enforcement shrinks in a fixed order when the estimate is over
 budget: drop the oldest stubs, then tighten the `recent` caps, then shorten
 `current_message` to head plus tail. `current_message` and
-`routing_history` are never dropped. Redaction runs on the assembled object,
-since it leaves our boundary for TypeSafe: regex masking of emails, phone
-numbers, card numbers and key-like strings, behind a hook that can be
-replaced with something stronger. Nothing here touches the messages LiteLLM
-forwards to the serving model.
+`routing_history` are never dropped. Every cap above is a setting in the
+`state` block of `router.yaml`. There is no built-in redaction: the serving
+models already see the full conversation, and masking emails, keys or
+numbers punches holes in exactly the text Jev is judging. `state.filter`
+names an optional callable applied to the assembled object before it leaves
+for TypeSafe, for teams with their own policy; it defaults to none. Nothing
+here touches the messages LiteLLM forwards to the serving model.
 
 No model-written summary is in the baseline. If the phase 2 eval shows
 `continues_task` or `needs_history` degrading on long conversations, the
@@ -374,6 +376,19 @@ alias: jev-auto
 shadow: false
 objective: { lambda_cost: 1.0, lambda_quality: 3.0 }
 jev: { model: jev-latest, timeout_ms: 1500, min_confidence: 0.55 }
+state:                                     # what Jev sees; all caps are tunable
+  budget_tokens: 8000
+  current_message_chars: 6000
+  recent_messages: 6
+  recent_user_chars: 1500
+  recent_assistant_chars: 800
+  tool_result_chars: 300
+  older_stubs: 20
+  older_stub_chars: 120
+  first_message_stub_chars: 400
+  system_prompt_chars: 600
+  routing_history_entries: 5
+  filter: null                             # optional dotted path to a callable(state) -> state
 switch_cost: { base: 0.002, continuity: 0.02, thinking_loss: 0.005, cross_provider: 0.01 }   # dollar-equivalent
 tier_penalty: [0, 0.05, 0.20, 0.60]        # cost of being 0, 1, 2, 3 ranks below what Jev thinks is needed
 tiers:                                     # ordered by capability; everything else comes from litellm.get_model_info
@@ -519,7 +534,7 @@ docs/
 | Jev is days old and gated; API may change | `Judge` protocol; `RecordedJudge` keeps tests independent of the network |
 | Calibration is TypeSafe's claim | Phase 2 calibration curve; confidence gating from day one |
 | 32k state budget on long conversations | Rolling summary for Jev only; served messages untouched |
-| Conversation content leaves our boundary to TypeSafe | Redaction hook in `StateBuilder`; shadow mode on synthetic traffic first |
+| Conversation content leaves our boundary to TypeSafe | Only the minimized state is sent; `state.filter` hook for teams that need masking; shadow mode on synthetic traffic first |
 | Added latency on every non-fast-path turn | Fast path skips Jev on tool loops; 1.5 s timeout; fail open |
 | Cache prediction drifts | Ledger corrected from every response's usage; predicted-versus-observed logged |
 | LiteLLM version drift (effort gating, cache accounting, hook coverage have regressed before) | Pinned version; the phase 0 spike is the regression test; upgrade only with it green |
