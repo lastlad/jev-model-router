@@ -9,7 +9,7 @@ repo is built yet.
 |---|---|
 | Front door | OpenAI-compatible `/v1/chat/completions`, served by **LiteLLM proxy**; the router is a LiteLLM `CustomLogger` plugin |
 | Candidate providers | Anthropic and OpenAI from phase 1; LiteLLM owns the format translation |
-| Jev access | Keys are available; `typesafe-sdk` against `jev-latest` from day one, LLM-backed adapter kept only for CI |
+| Jev access | Keys are available; `typesafe-sdk` against `jev-latest` from day one; tests use a recorded judge, no network |
 | Objective | Quality first, cost second |
 | Conversation identity | `x-litellm-session-id` / `x-litellm-trace-id` header when present, otherwise derived by the router |
 | Privacy | Redacted, minimized transcripts may be sent to TypeSafe |
