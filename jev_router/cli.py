@@ -3,6 +3,8 @@ import asyncio
 import json
 import sys
 
+import yaml
+
 from .core.config import load_config
 from .core.judge import JevJudge, Judgment, RecordedJudge
 from .core.ledger import Ledger, MemoryKV
@@ -18,9 +20,10 @@ def _load(path: str) -> dict:
 
 async def _replay(args: argparse.Namespace) -> None:
     cfg = load_config(args.config)
-    resolve_tiers(cfg)
+    with open(args.litellm_config) as f:
+        resolve_tiers(cfg, yaml.safe_load(f).get("model_list", []))
     judge = (
-        RecordedJudge(Judgment(**_load(args.judgment)))
+        RecordedJudge(Judgment.from_dict(_load(args.judgment)))
         if args.judgment
         else JevJudge(cfg.jev.model, cfg.jev.timeout_ms / 1000)
     )
@@ -51,6 +54,7 @@ def main(argv: list[str] | None = None) -> None:
         sp = sub.add_parser(name)
         sp.add_argument("request")
         sp.add_argument("--config", default="deploy/router.yaml")
+        sp.add_argument("--litellm-config", default="deploy/config.yaml")
         sp.add_argument("--call-type", default="completion")
         if name == "replay":
             sp.add_argument("--judgment", help="JSON file with a recorded Judgment instead of calling Jev")

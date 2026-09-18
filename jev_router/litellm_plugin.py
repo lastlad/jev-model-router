@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import litellm
@@ -27,18 +28,22 @@ class DualCacheKV:
         await self.cache.async_set_cache(key, value, ttl=ttl)
 
 
-def resolve_tiers(cfg: RouterConfig) -> None:
-    try:
-        from litellm.proxy.proxy_server import llm_router
-    except Exception:
-        llm_router = None
+def resolve_tiers(cfg: RouterConfig, model_list: Sequence[Mapping[str, Any]] | None = None) -> None:
+    """Fill tier.model_id/provider from the proxy's router, or from a config.yaml model_list."""
+    if model_list is None:
+        try:
+            from litellm.proxy.proxy_server import llm_router
+
+            model_list = list(llm_router.get_model_list() or []) if llm_router else None
+        except Exception:
+            model_list = None
+    by_name = {d["model_name"]: d["litellm_params"].get("model") for d in model_list or []}
     for tier in cfg.tiers:
-        if tier.model_id is None:
-            deployments = llm_router.get_model_list(model_name=tier.model) if llm_router else None
-            tier.model_id = (deployments[0]["litellm_params"].get("model") if deployments else None) or tier.model
+        model_id = tier.model_id or by_name.get(tier.model) or tier.model
+        tier.model_id = model_id
         if tier.provider is None:
             try:
-                tier.provider = litellm.get_llm_provider(tier.model_id)[1]
+                tier.provider = litellm.get_llm_provider(model_id)[1]
             except Exception:
                 tier.provider = None
 

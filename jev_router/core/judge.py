@@ -60,6 +60,12 @@ class Judgment:
     quality_complaint: float = 0.0
     expected_output: int = 1
 
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "Judgment":
+        d = dict(d)
+        d["required_tier"] = {int(k): float(v) for k, v in d.get("required_tier", {1: 1.0}).items()}
+        return cls(**d)
+
     @property
     def expected_tier(self) -> float:
         return sum(k * v for k, v in self.required_tier.items())
