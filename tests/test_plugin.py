@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
 from jev_router.core.config import Tier
-from jev_router.litellm_plugin import apply_effort, response_fingerprint, usage_of
+from jev_router.litellm_plugin import apply_effort, metadata_key, response_fingerprint, usage_of
 
 
 def test_usage_openai_shape():
@@ -33,3 +33,9 @@ def test_response_fingerprint_shapes():
     assert response_fingerprint({"content": [{"type": "tool_use", "id": "toolu_1"}]}) == "tc:toolu_1"
     msg = SimpleNamespace(content="hello", tool_calls=None)
     assert response_fingerprint(SimpleNamespace(choices=[SimpleNamespace(message=msg)])).startswith("tx:")
+
+
+def test_metadata_key_by_route():
+    assert metadata_key("acompletion") == "metadata"
+    assert metadata_key("aanthropic_messages") == "litellm_metadata"
+    assert metadata_key("aresponses") == "litellm_metadata"

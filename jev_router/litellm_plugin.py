@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import time
@@ -15,6 +16,17 @@ from .core.router import Router
 
 log = logging.getLogger("jev_router")
 META_KEY = "jev_router"
+LOG_FILE = os.environ.get("JEV_ROUTER_LOG_FILE")
+if os.environ.get("JEV_ROUTER_LOG_LEVEL"):
+    log.setLevel(os.environ["JEV_ROUTER_LOG_LEVEL"])
+    log.addHandler(logging.StreamHandler())
+
+
+def log_event(kind: str, payload: dict[str, Any]) -> None:
+    log.info("%s %s", kind, json.dumps(payload, default=str))
+    if LOG_FILE:
+        with open(LOG_FILE, "a") as f:
+            f.write(json.dumps({"event": kind, **payload}, default=str) + "\n")
 
 
 class DualCacheKV:
@@ -83,6 +95,15 @@ def response_fingerprint(response: Any) -> str | None:
     return None
 
 
+def metadata_key(call_type: str) -> str:
+    """Chat completions use `metadata`; /v1/messages and /v1/responses keep proxy metadata in `litellm_metadata`."""
+    return "metadata" if call_type.endswith("completion") else "litellm_metadata"
+
+
+def request_info(md: dict[str, Any] | None) -> dict[str, Any] | None:
+    return (md or {}).get(META_KEY)
+
+
 def apply_effort(data: dict[str, Any], tier: Tier, call_type: str) -> None:
     if tier.effort is None:
         return
@@ -119,17 +140,32 @@ class JevRouterPlugin(CustomLogger):
         if not self.cfg.shadow:
             data["model"] = tier.model
             apply_effort(data, tier, call_type)
-        data.setdefault("metadata", {})[META_KEY] = {
+        info = {
             "start": start,
             "call_type": call_type,
             "shadow": self.cfg.shadow,
             "stable_prefix_tokens": turn.stable_prefix_tokens if turn else 0,
             "decision": decision.to_dict() if decision else {"tier": tier.name, "reason": "error"},
         }
+        data.setdefault(metadata_key(call_type), {})[META_KEY] = info
+        if call_id := data.get("litellm_call_id"):
+            await router.ledger.kv.set(f"jev_router:pending:{call_id}", info, 600)
+        log_event("decision", {"jev_ms": round((time.time() - start) * 1000), **info})
         return data
 
+    async def _pending(self, call_id: str | None, *metadata: dict[str, Any] | None) -> dict[str, Any] | None:
+        if call_id and self.router is not None:
+            info = await self.router.ledger.kv.get(f"jev_router:pending:{call_id}")
+            if info:
+                return info
+        for md in metadata:
+            if info := request_info(md):
+                return info
+        return None
+
     async def async_log_success_event(self, kwargs: dict, response_obj: Any, start_time: Any, end_time: Any) -> None:
-        info = ((kwargs.get("litellm_params") or {}).get("metadata") or {}).get(META_KEY)
+        lp = kwargs.get("litellm_params") or {}
+        info = await self._pending(kwargs.get("litellm_call_id"), lp.get("metadata"), lp.get("litellm_metadata"))
         if not info or info.get("shadow") or self.router is None:
             return
         from .core.request import Turn
@@ -138,8 +174,19 @@ class JevRouterPlugin(CustomLogger):
         d = info["decision"]
         decision = Decision(d["tier"], d["reason"], d["conversation_id"])
         turn = Turn(messages=[], stable_prefix_tokens=info.get("stable_prefix_tokens", 0))
-        _, cached = usage_of(response_obj)
+        prompt, cached = usage_of(response_obj)
         await self.router.observe(decision, turn, cached, response_fingerprint(response_obj), info["start"])
+        log_event(
+            "observed",
+            {
+                "conversation_id": d["conversation_id"],
+                "tier": d["tier"],
+                "model": kwargs.get("model"),
+                "prompt_tokens": prompt,
+                "cached_tokens": cached,
+                "cost": kwargs.get("response_cost"),
+            },
+        )
 
     async def async_post_call_failure_hook(
         self,
@@ -148,7 +195,9 @@ class JevRouterPlugin(CustomLogger):
         user_api_key_dict: Any,
         traceback_str: str | None = None,
     ) -> None:  # type: ignore[override]
-        info = (request_data.get("metadata") or {}).get(META_KEY)
+        info = await self._pending(
+            request_data.get("litellm_call_id"), request_data.get("metadata"), request_data.get("litellm_metadata")
+        )
         if info and self.router is not None and not info.get("shadow"):
             await self.router.forget_cache(info["decision"]["conversation_id"])
 

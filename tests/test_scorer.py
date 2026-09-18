@@ -64,3 +64,11 @@ def test_low_confidence_keeps_incumbent(cfg, ledger):
 def test_context_overflow_excludes_small_context_tier(cfg, ledger):
     d = choose(turn(tokens=300_000), judgment(level=0), None, cfg, ledger, now=0.0)
     assert "haiku" not in {s.tier for s in d.scores}
+
+
+def test_complaint_at_top_tier_stays_at_top(cfg, ledger):
+    top = cfg.tiers[-1].name
+    e = entry(top)
+    e.model, e.effort = cfg.tiers[-1].model, cfg.tiers[-1].effort
+    d = choose(turn(), judgment(level=2, quality_complaint=0.95), e, cfg, ledger, now=1010.0)
+    assert d.tier == top and d.reason == "quality_complaint"

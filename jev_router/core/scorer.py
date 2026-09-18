@@ -92,7 +92,8 @@ def choose(
     if judgment.required_confidence < cfg.jev.min_confidence:
         return Decision(incumbent or cfg.default, "low_confidence", judgment=judgment)
 
-    floor = cfg.rank(incumbent) + 1 if incumbent and judgment.quality_complaint >= cfg.jev.complaint_threshold else 0
+    complaint = bool(incumbent) and judgment.quality_complaint >= cfg.jev.complaint_threshold
+    floor = min(cfg.rank(incumbent) + 1, len(cfg.tiers) - 1) if complaint and incumbent else 0
     output_tokens = cfg.expected_output_tokens[judgment.expected_output]
     scores: list[Scored] = []
     for tier in cfg.tiers:
