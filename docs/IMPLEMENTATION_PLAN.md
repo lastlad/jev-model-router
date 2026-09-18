@@ -248,13 +248,43 @@ object on the way out. It never edits `messages` or `tools`.
 | Jev unreachable, 429, or over the 1.5 s budget | Incumbent if present, else the default tier; fail open |
 | No ledger entry (first turn) | Jev consulted; no incumbent, so no cache term |
 
-**`StateBuilder`.** Produces Jev's `state` under the 32k-token budget as a
-JSON object: system prompt summary and length, tool names and count, the
-last few turns with per-turn truncation, a router-maintained rolling summary
-of older turns, the full current message up to a cap, structural signals,
-and the last five ledger entries. Redaction runs here, since this object
-leaves our boundary for TypeSafe. The rolling summary exists only for Jev;
-the messages LiteLLM forwards to the model are untouched.
+**`StateBuilder`.** Produces Jev's `state` as a JSON object. Two facts
+drive it: Jev's limit is about 32k tokens of state, and TypeSafe documents
+that accuracy falls as unrelated content grows. So the target is the least
+state that still answers the six questions, default budget 8k tokens, and
+the compression is deterministic and free: no model call, so no added
+latency, no added cost, and every decision reproducible from the log.
+
+The six questions need the current message in full, enough recent context to
+judge continuity and difficulty, the app's domain from the system prompt, the
+tool names, and the router's own history. They do not need the verbatim
+transcript, and least of all tool outputs, which dominate agentic transcripts
+and rarely change the routing judgment. The compression is therefore a zoom
+by recency:
+
+| Section | What is kept | Default cap |
+|---|---|---|
+| `current_message` | Whole text; if over cap, head plus tail with an elision marker (the ask often sits at the end of a long paste) | 6,000 chars |
+| `recent` (last 6 messages) | User text head-truncated; assistant text head-truncated; tool calls as name plus argument keys; tool results as a short head plus size and error flag | 1,500 / 800 / 300 chars |
+| `older` (everything before `recent`) | One stub per message: role, first 120 chars, char count, tool names; the first user message gets a longer stub since it usually states the task | 20 stubs, 400 chars for the first |
+| `system_prompt` | Head, total length, hash | 600 chars |
+| `tools` | Names and count; descriptions omitted | – |
+| `signals` | Image count, code-block count, pending tool calls, turn count | – |
+| `routing_history` | Last 5 ledger entries: tier served, `task_type` and `required_tier` as Jev judged them, confidence, cached tokens, gap since previous turn. This is a free semantic trail of the conversation, produced by Jev itself on earlier turns | 5 entries |
+
+Budget enforcement shrinks in a fixed order when the estimate is over
+budget: drop the oldest stubs, then tighten the `recent` caps, then shorten
+`current_message` to head plus tail. `current_message` and
+`routing_history` are never dropped. Redaction runs on the assembled object,
+since it leaves our boundary for TypeSafe: regex masking of emails, phone
+numbers, card numbers and key-like strings, behind a hook that can be
+replaced with something stronger. Nothing here touches the messages LiteLLM
+forwards to the serving model.
+
+No model-written summary is in the baseline. If the phase 2 eval shows
+`continues_task` or `needs_history` degrading on long conversations, the
+experiment is an off-critical-path summary by a cheap model every N turns,
+cached in the ledger.
 
 **`JevJudge`.** One `system_one` call with six questions, evaluated in parallel:
 
