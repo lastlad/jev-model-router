@@ -7,7 +7,7 @@ repo is built yet.
 
 | Question | Decision |
 |---|---|
-| Front door | OpenAI-compatible `/v1/chat/completions`, served by **LiteLLM proxy**; the router is a LiteLLM `CustomLogger` plugin |
+| Front door | **LiteLLM proxy**; the router is a LiteLLM `CustomLogger` plugin. Supported ingress: OpenAI `/v1/chat/completions` (primary), OpenAI `/v1/responses`, and Anthropic `/v1/messages` (verified to run the pre-call hook in the pinned version) |
 | Candidate providers | Anthropic and OpenAI from phase 1; LiteLLM owns the format translation |
 | Jev access | Keys are available; `typesafe-sdk` against `jev-latest` from day one; tests use a recorded judge, no network |
 | Objective | Quality first, cost second |
@@ -172,7 +172,7 @@ gives us, and where its edges are:
 | Capability | Status | Consequence |
 |---|---|---|
 | `async_pre_call_hook(user_api_key_dict, cache, data, call_type)` on `/v1/chat/completions` | Works; may rewrite `data["model"]`, `data["reasoning_effort"]`, messages, metadata, or reject | This is the router's entry point |
-| Same hook on LiteLLM's Anthropic-format `/v1/messages` | **Bypassed** (open issues #30469, #27518) | Only the OpenAI-format endpoint is supported; documented as a constraint |
+| Same hook on LiteLLM's Anthropic-format `/v1/messages` | Issues #30469 and #27518 report it bypassed, but in the pinned 1.101.0 the endpoint calls `base_process_llm_request(route_type="anthropic_messages")`, which runs `pre_call_hook` with `call_type="anthropic_messages"` on the raw Anthropic body | Supported. The hook branches on `call_type`; LiteLLM's own `LiteLLMAnthropicMessagesAdapter.translate_anthropic_to_openai` gives a read-only OpenAI-shaped view, so the router owns no format code. Effort on this path is set in Anthropic-native `output_config`, confirmed in the phase 0 spike |
 | `cache_control` in OpenAI-format content blocks forwarded to Anthropic, Bedrock, Gemini | Works | The hook can place explicit breakpoints |
 | `cache_control_injection_points` per deployment (`location: message`, `role`, `index`) | Works | Zero-code default: system block plus `index: -1` |
 | Usage normalization: `prompt_tokens_details.cached_tokens` and `cache_creation_input_tokens` on chat completions, for Anthropic and OpenAI | Works | One ledger update path for both providers |
@@ -194,7 +194,7 @@ gives us, and where its edges are:
 ## 3. Architecture
 
 ```
-client ──► LiteLLM proxy ──► /v1/chat/completions or /v1/responses   {model: "jev-auto", ...}
+client ──► LiteLLM proxy ──► /v1/chat/completions, /v1/responses, or /v1/messages   {model: "jev-auto", ...}
                 │
                 ▼
    JevRouterPlugin.async_pre_call_hook(user_api_key_dict, cache, data, call_type)
@@ -224,7 +224,7 @@ object on the way out. It never edits `messages` or `tools`.
 
 | Concern | Owner | How |
 |---|---|---|
-| Ingress formats (chat completions, Responses API), provider translation, streaming, retries, fallbacks | LiteLLM | Standard proxy config; nothing in the router |
+| Ingress formats (chat completions, Responses API, Anthropic Messages), provider translation, streaming, retries, fallbacks | LiteLLM | Standard proxy config; the hook branches on `call_type` and uses LiteLLM's adapter to read an Anthropic body as OpenAI shape |
 | Cache breakpoints for Anthropic (and Gemini if added) | LiteLLM | `cache_control_injection_points` on each deployment: system block plus last message |
 | Prices, cache read and write rates, context windows, tool and vision support | LiteLLM | `get_model_info` and `cost_per_token` |
 | Token counts | LiteLLM | `token_counter` |
@@ -406,9 +406,13 @@ available as an alternative judge for the eval comparison.
 - `deploy/docker-compose.yml`: LiteLLM proxy (same pinned image tag) with
   `deploy/config.yaml` mounted, Redis, and an env file for the three API
   keys. `docker compose up` is the whole deployment.
-- A no-op plugin that rewrites `model` and sets `reasoning_effort` for each
-  tier, run against the pinned proxy on both `/v1/chat/completions` and
-  `/v1/responses`, streaming and not.
+- A no-op plugin that rewrites `model` and sets effort for each tier, run
+  against the pinned proxy on `/v1/chat/completions`, `/v1/responses`, and
+  Anthropic-format `/v1/messages`, streaming and not. On the Messages path
+  this confirms three things: the hook fires with `call_type="anthropic_messages"`,
+  an Anthropic-format request rewritten to a GPT-5.6 tier is bridged by
+  LiteLLM, and effort is honoured via `output_config` (Anthropic tiers) or
+  bridged to `reasoning_effort` (OpenAI tiers).
 - A script that sends two identical requests per tier and asserts
   `prompt_tokens_details.cached_tokens > 0` on the second, for Anthropic and
   OpenAI, and that `response_cost` arrives in the success callback. Any tier
@@ -489,7 +493,7 @@ docs/
 | Added latency on every non-fast-path turn | Fast path skips Jev on tool loops; 1.5 s timeout; fail open |
 | Cache prediction drifts | Ledger corrected from every response's usage; predicted-versus-observed logged |
 | LiteLLM version drift (effort gating, cache accounting, hook coverage have regressed before) | Pinned version; the phase 0 spike is the regression test; upgrade only with it green |
-| Apps call LiteLLM's Anthropic-format `/v1/messages`, where hooks are bypassed upstream | Documented as unrouted; the alias's default deployment serves them; fix belongs in LiteLLM, not here |
+| `/v1/messages` hook coverage regresses in a later LiteLLM version (it was broken before 1.101.0) | The phase 0 spike is the regression test; upgrades only with it green |
 | Effort change loses the messages cache on this path | Modelled in the ledger; measured in phase 2 |
 | No Redis | In-memory `DualCache` still works per process; cold-start routing after restart, never errors |
 | Turn gaps longer than the cache TTL make caching moot for that traffic | Expected and handled: no cache term, fresh decision; gap distribution reported in phase 2 to pick TTLs per route |
