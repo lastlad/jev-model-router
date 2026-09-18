@@ -1,0 +1,82 @@
+from pathlib import Path
+
+import yaml
+from pydantic import BaseModel, Field
+
+
+class Objective(BaseModel):
+    lambda_cost: float = 1.0
+    lambda_quality: float = 3.0
+
+
+class JevConfig(BaseModel):
+    model: str = "jev-latest"
+    timeout_ms: int = 1500
+    min_confidence: float = 0.55
+    complaint_threshold: float = 0.6
+
+
+class StateConfig(BaseModel):
+    budget_tokens: int = 8000
+    current_message_chars: int = 6000
+    recent_messages: int = 6
+    recent_user_chars: int = 1500
+    recent_assistant_chars: int = 800
+    tool_result_chars: int = 300
+    older_stubs: int = 20
+    older_stub_chars: int = 120
+    first_message_stub_chars: int = 400
+    system_prompt_chars: int = 600
+    routing_history_entries: int = 5
+    filter: str | None = None
+
+
+class SwitchCost(BaseModel):
+    base: float = 0.002
+    continuity: float = 0.02
+    thinking_loss: float = 0.005
+    cross_provider: float = 0.01
+
+
+class Tier(BaseModel):
+    name: str
+    model: str  # LiteLLM deployment model_name
+    effort: str | None = None
+    level: int = Field(ge=0, le=3)  # capability level on Jev's required_tier scale
+    model_id: str | None = None  # provider-qualified id for pricing; resolved from the proxy
+    provider: str | None = None
+
+
+class RouterConfig(BaseModel):
+    alias: str = "jev-auto"
+    shadow: bool = False
+    objective: Objective = Objective()
+    jev: JevConfig = JevConfig()
+    state: StateConfig = StateConfig()
+    switch_cost: SwitchCost = SwitchCost()
+    tier_penalty: list[float] = [0.0, 0.05, 0.2, 0.6]
+    expected_output_tokens: list[int] = [200, 800, 3000]
+    effort_output_multiplier: dict[str, float] = {
+        "low": 0.7,
+        "medium": 1.0,
+        "high": 1.5,
+        "xhigh": 2.5,
+        "max": 4.0,
+    }
+    cache_ttl_seconds: int = 300
+    tiers: list[Tier]
+    default: str
+
+    def tier(self, name: str) -> Tier:
+        for t in self.tiers:
+            if t.name == name:
+                return t
+        raise KeyError(name)
+
+    def rank(self, name: str) -> int:
+        return [t.name for t in self.tiers].index(name)
+
+
+def load_config(path: str | Path) -> RouterConfig:
+    with open(path) as f:
+        return RouterConfig.model_validate(yaml.safe_load(f))
