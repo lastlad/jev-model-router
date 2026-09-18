@@ -14,6 +14,9 @@ repo is built yet.
 | Conversation identity | `x-litellm-session-id` / `x-litellm-trace-id` header when present, otherwise derived by the router |
 | Privacy | Redacted, minimized transcripts may be sent to TypeSafe |
 | Language | Python 3.12 (LiteLLM plugins are Python; the Jev SDK is Python-first) |
+| OpenAI models | The GPT-5.6 stack: `gpt-5.6-luna` (small), `gpt-5.6-terra` (mid), `gpt-5.6-sol` (frontier); all priced in LiteLLM's registry |
+| Deployment | No proxy exists yet; this repo ships a `deploy/docker-compose.yml` with LiteLLM proxy plus Redis, pinned to the version the plan was verified against (`litellm` 1.101.0) |
+| Turn gap | Unknown and use-case dependent, so nothing in the design assumes one; the ledger measures it and the phase 2 report decides TTL strategy per use case |
 | Scope rule | **LiteLLM owns every transaction.** Ingress formats, provider translation, streaming, retries, fallbacks, caching directives, pricing, token counting, cost logging. The router adds only what LiteLLM cannot do: ask Jev, remember past decisions per conversation, and pick the `(model, effort)` |
 
 ## 1. What we are building
@@ -181,7 +184,7 @@ gives us, and where its edges are:
 | Built-in beta `auto_router/complexity_router` with a custom `async classify(context)` plugin | Works, but the plugin returns a tier only and the classifier context is the last human ask plus 3 turns at 200 chars each | Too narrow for history-, cache-, and ledger-aware routing; the pre-call hook is the right seam. Its heuristic scorer is a free baseline for the eval |
 | Provider switching mid-conversation | LiteLLM translates tool-call formats; `reasoning_content` / thinking blocks from one provider do not transfer to another | Cross-provider switch penalty in the scorer |
 | `litellm.cost_per_token(model, prompt_tokens, completion_tokens, cache_read_input_tokens=, cache_creation_input_tokens=)` | Works; cache-aware, both providers | The scorer prices candidates with it; **no price table in our config** |
-| `litellm.get_model_info(model)` → `input_cost_per_token`, `cache_read_input_token_cost`, `cache_creation_input_token_cost`, `max_input_tokens`, `supports_function_calling`, `supports_vision`, `supports_prompt_caching`, `prompt_cache_min_tokens` | Works; registry already lists Opus 5, Sonnet 5, Haiku 4.5, GPT-5.5, GPT-5-mini with prices | Eligibility filtering and cache minimums come from the registry; **no capability table in our config** |
+| `litellm.get_model_info(model)` → `input_cost_per_token`, `cache_read_input_token_cost`, `cache_creation_input_token_cost`, `max_input_tokens`, `supports_function_calling`, `supports_vision`, `supports_prompt_caching`, `prompt_cache_min_tokens` | Works; registry already lists Opus 5, Sonnet 5, Haiku 4.5 and the GPT-5.6 stack (luna, terra, sol) with prices and cache rates | Eligibility filtering and cache minimums come from the registry; **no capability table in our config** |
 | `litellm.token_counter(model=, messages=, tools=)` | Works | Used for the Jev state budget and the stable-prefix estimate |
 | `response_cost` in the success-callback `kwargs`; `async_log_success_event` fires once per request with the assembled response, streaming included | Works | The router never computes cost for logging |
 | `data["litellm_session_id"]` populated before hooks from `x-litellm-session-id` / `x-litellm-trace-id`; a random UUID when absent | Works | Use when the client supplied it; otherwise derive a stable id ourselves |
@@ -319,14 +322,16 @@ model_list:
   - model_name: opus
     litellm_params: { model: anthropic/claude-opus-5, api_key: os.environ/ANTHROPIC_API_KEY }
     cache_control_injection_points: [{ location: message, role: system }, { location: message, index: -1 }]
-  - model_name: gpt-mini
-    litellm_params: { model: openai/gpt-5-mini, api_key: os.environ/OPENAI_API_KEY }
-  - model_name: gpt
-    litellm_params: { model: openai/gpt-5.5, api_key: os.environ/OPENAI_API_KEY }
+  - model_name: luna
+    litellm_params: { model: openai/gpt-5.6-luna, api_key: os.environ/OPENAI_API_KEY }
+  - model_name: terra
+    litellm_params: { model: openai/gpt-5.6-terra, api_key: os.environ/OPENAI_API_KEY }
+  - model_name: sol
+    litellm_params: { model: openai/gpt-5.6-sol, api_key: os.environ/OPENAI_API_KEY }
   - model_name: jev-auto                       # alias apps call; the hook rewrites it
     litellm_params: { model: anthropic/claude-sonnet-5, api_key: os.environ/ANTHROPIC_API_KEY }
 router_settings:
-  fallbacks: [{ opus: [sonnet] }, { gpt: [sonnet] }]
+  fallbacks: [{ opus: [sonnet] }, { sol: [sonnet] }, { terra: [sonnet] }, { luna: [haiku] }]
 litellm_settings:
   callbacks: jev_router.litellm_plugin.proxy_handler_instance
   cache: true
@@ -342,20 +347,47 @@ jev: { model: jev-latest, timeout_ms: 1500, min_confidence: 0.55 }
 switch_cost: { base: 0.002, continuity: 0.02, thinking_loss: 0.005, cross_provider: 0.01 }   # dollar-equivalent
 tier_penalty: [0, 0.05, 0.20, 0.60]        # cost of being 0, 1, 2, 3 ranks below what Jev thinks is needed
 tiers:                                     # ordered by capability; everything else comes from litellm.get_model_info
-  - { name: haiku,         model: haiku,    effort: null }
-  - { name: gpt-mini,      model: gpt-mini, effort: low }
-  - { name: sonnet-low,    model: sonnet,   effort: low }
-  - { name: sonnet-medium, model: sonnet,   effort: medium }
-  - { name: sonnet-high,   model: sonnet,   effort: high }
-  - { name: gpt,           model: gpt,      effort: medium }
-  - { name: opus-medium,   model: opus,     effort: medium }
-  - { name: opus-xhigh,    model: opus,     effort: xhigh }
+  - { name: haiku,         model: haiku,  effort: null }
+  - { name: luna,          model: luna,   effort: low }
+  - { name: sonnet-low,    model: sonnet, effort: low }
+  - { name: sonnet-medium, model: sonnet, effort: medium }
+  - { name: terra,         model: terra,  effort: medium }
+  - { name: sonnet-high,   model: sonnet, effort: high }
+  - { name: sol,           model: sol,    effort: high }
+  - { name: opus-medium,   model: opus,   effort: medium }
+  - { name: opus-xhigh,    model: opus,   effort: xhigh }
 default: sonnet-medium
 ```
 
-OpenAI model choices are placeholders; the registry already prices GPT-5.5
-and GPT-5-mini, so swapping them is a one-line change. The cross-provider
-order is a hypothesis the eval checks.
+Registry prices as of `litellm` 1.101.0, per million tokens, input / output /
+cached input:
+
+| Tier model | Input | Output | Cached input |
+|---|---|---|---|
+| claude-haiku-4-5 | 1.00 | 5.00 | 0.10 |
+| gpt-5.6-luna | 0.20 | 1.20 | 0.02 |
+| claude-sonnet-5 | 2.00 | 10.00 | 0.20 |
+| gpt-5.6-terra | 2.00 | 12.00 | 0.20 |
+| gpt-5.6-sol | 4.00 | 20.00 | 0.40 |
+| claude-opus-5 | 5.00 | 25.00 | 0.50 |
+
+The cross-provider order in the ladder is a hypothesis the phase 2 eval
+checks; the scorer only needs the ranks to be monotone in capability.
+
+### 3.3.1 Turn gaps and cache TTLs
+
+The gap between turns is unknown and will differ by use case, so the design
+does not assume one. Both providers' caches expire about five minutes after
+the last use, and the ledger stores the last request start time, so a
+candidate is predicted to have cached tokens only when the gap is inside the
+TTL. After a longer gap there is no cache to protect and the stickiness term
+drops to its base value, which is the right behaviour: a fresh decision on
+quality and price alone. The ledger also records the observed gap for every
+turn, and the phase 2 report includes the gap distribution per traffic
+source. If a use case turns out to sit mostly in the 5–60 minute band, the
+per-deployment fix is Anthropic's 1-hour cache TTL on the injected
+`cache_control` for that route, which is a `config.yaml` change and no
+router code.
 
 ### 3.4 Why Jev does not pick the model directly
 
@@ -370,7 +402,10 @@ available as an alternative judge for the eval comparison.
 
 ### Phase 0: LiteLLM spike (about 1 day)
 
-- `uv` project, pinned `litellm[proxy]`, `typesafe-sdk`, `ruff`, `pyright`, `pytest`.
+- `uv` project, `litellm[proxy]` pinned to 1.101.0, `typesafe-sdk`, `ruff`, `pyright`, `pytest`.
+- `deploy/docker-compose.yml`: LiteLLM proxy (same pinned image tag) with
+  `deploy/config.yaml` mounted, Redis, and an env file for the three API
+  keys. `docker compose up` is the whole deployment.
 - A no-op plugin that rewrites `model` and sets `reasoning_effort` for each
   tier, run against the pinned proxy on both `/v1/chat/completions` and
   `/v1/responses`, streaming and not.
@@ -431,8 +466,10 @@ jev_router/
   litellm_plugin.py  # CustomLogger wiring; proxy_handler_instance
   cli.py             # replay + explain
 deploy/
+  docker-compose.yml # LiteLLM proxy + Redis, pinned
   config.yaml        # LiteLLM proxy config
   router.yaml
+  .env.example       # ANTHROPIC_API_KEY, OPENAI_API_KEY, TYPESAFE_API_KEY
 eval/
   conversations/     # JSONL eval set
   label.py
@@ -455,19 +492,14 @@ docs/
 | Apps call LiteLLM's Anthropic-format `/v1/messages`, where hooks are bypassed upstream | Documented as unrouted; the alias's default deployment serves them; fix belongs in LiteLLM, not here |
 | Effort change loses the messages cache on this path | Modelled in the ledger; measured in phase 2 |
 | No Redis | In-memory `DualCache` still works per process; cold-start routing after restart, never errors |
+| Turn gaps longer than the cache TTL make caching moot for that traffic | Expected and handled: no cache term, fresh decision; gap distribution reported in phase 2 to pick TTLs per route |
 
-## 7. Remaining open questions
+## 7. Open questions
 
-Defaults will be built if unanswered.
-
-1. **Which OpenAI models.** Default: `gpt-5-mini` and `gpt-5.5`, both
-   already priced in LiteLLM's registry.
-2. **Existing LiteLLM deployment.** Is a proxy with `config.yaml` and Redis
-   already running, and which version? Default: fresh pinned deployment
-   under `deploy/`.
-3. **Traffic profile.** Typical gap between turns decides whether the
-   5-minute provider caches stay warm on their own. Default: assume
-   interactive traffic.
+None outstanding. Everything the plan depends on is recorded in section 0.
+The first decisions the build itself will surface are the eval results in
+phase 2: the cross-provider tier order, the `λ` weights, and whether any
+route needs the 1-hour cache TTL.
 
 ## 8. Sources
 
