@@ -1,14 +1,28 @@
 # Jev-powered model router: research findings and implementation plan
 
-Status: proposal, 2026-09-18. Nothing in this repo is built yet.
+Status: proposal, revised 2026-09-18 after decisions below. Nothing in this
+repo is built yet.
+
+## 0. Decisions taken
+
+| Question | Decision |
+|---|---|
+| Front door | OpenAI-compatible `/v1/chat/completions`, served by **LiteLLM proxy**; the router is a LiteLLM `CustomLogger` plugin |
+| Candidate providers | Anthropic and OpenAI from phase 1; LiteLLM owns the format translation |
+| Jev access | Keys are available; `typesafe-sdk` against `jev-latest` from day one, LLM-backed adapter kept only for CI |
+| Objective | Quality first, cost second |
+| Conversation identity | `x-litellm-session-id` / `x-litellm-trace-id` header when present, otherwise derived by the router |
+| Privacy | Redacted, minimized transcripts may be sent to TypeSafe |
+| Language | Python 3.12 (LiteLLM plugins are Python; the Jev SDK is Python-first) |
 
 ## 1. What we are building
 
 A routing layer that sits between end-user applications and LLM providers.
-Each incoming turn of a conversation is inspected, TypeSafe's **Jev** model
-judges what the turn needs, and deterministic code turns that judgment plus the
-conversation's routing history and prompt-cache state into a concrete
-`(model, effort)` choice. The chosen model then serves the turn.
+Applications call a LiteLLM proxy with `model: "jev-auto"`. Each incoming turn
+is inspected, TypeSafe's **Jev** model judges what the turn needs, and
+deterministic code turns that judgment plus the conversation's routing history
+and prompt-cache state into a concrete `(model, effort)` choice. LiteLLM then
+serves the turn with that model and returns an OpenAI-format response.
 
 The three requirements from the brief, restated as design constraints:
 
@@ -112,7 +126,9 @@ Two more Anthropic-specific facts shape the design:
   `mid-conversation-output-config-2026-07-01`) changes effort without
   invalidating the messages cache. So the cheapest "downgrade" is often the same
   model at lower effort, not a different model. The router's unit of choice is
-  therefore `(model, effort)`, not just `model`.
+  therefore `(model, effort)`, not just `model`. Through LiteLLM that beta is
+  not reachable (section 2.5), so on the chosen path an effort change keeps
+  only the tools-plus-system cache; it is still cheaper than a model switch.
 
 ### 2.4 Prior art
 
@@ -141,41 +157,76 @@ Two more Anthropic-specific facts shape the design:
   forfeits cache reuse across models. Our design adopts this as a first-class
   candidate rather than a competitor.
 
+### 2.5 LiteLLM proxy as the host (verified against LiteLLM docs and issues)
+
+LiteLLM already solves the parts of this product that are not about routing:
+OpenAI-compatible ingress, translation to Anthropic and OpenAI, streaming,
+retries, spend logging, and a Redis-backed cache. The existing Jev router
+(prismhq/jev-router) is a LiteLLM plugin for the same reason. What LiteLLM
+gives us, and where its edges are:
+
+| Capability | Status | Consequence |
+|---|---|---|
+| `async_pre_call_hook(user_api_key_dict, cache, data, call_type)` on `/v1/chat/completions` | Works; may rewrite `data["model"]`, `data["reasoning_effort"]`, messages, metadata, or reject | This is the router's entry point |
+| Same hook on LiteLLM's Anthropic-format `/v1/messages` | **Bypassed** (open issues #30469, #27518) | Only the OpenAI-format endpoint is supported; documented as a constraint |
+| `cache_control` in OpenAI-format content blocks forwarded to Anthropic, Bedrock, Gemini | Works | The hook can place explicit breakpoints |
+| `cache_control_injection_points` per deployment (`location: message`, `role`, `index`) | Works | Zero-code default: system block plus `index: -1` |
+| Usage normalization: `prompt_tokens_details.cached_tokens` and `cache_creation_input_tokens` on chat completions, for Anthropic and OpenAI | Works | One ledger update path for both providers |
+| Streaming cache accounting | Historic cost bug (#11789) closed; `/v1/messages`-to-OpenAI-upstream bug (#41067) open but not our path | Verify on the pinned LiteLLM version in phase 0; the ledger reconciles from real usage either way |
+| `reasoning_effort` mapped to Anthropic `output_config.effort` (low/medium/high/xhigh/max, model-gated) | Works for Claude 4.6+; model gating has lagged new releases before (#25957) | Pin a LiteLLM version and test each tier's effort value in phase 0 |
+| Anthropic's cache-preserving per-message effort change (`role: system`, `content: []`, `output_config`) | Not expressible in OpenAI format; LiteLLM folds `system` messages into top-level `system` | On this path an effort change **costs the messages cache**, keeps tools and system cache. The scorer models this (section 3.1) |
+| `x-litellm-trace-id` / `x-litellm-session-id` headers, `x-<vendor>-session-id` fallback | Works; lands in metadata and spend logs | Conversation identity for free when apps send it |
+| `cache: DualCache` argument to the hook (in-memory plus Redis) | Works | Home for the per-conversation ledger |
+| Built-in beta `auto_router/complexity_router` with a custom `async classify(context)` plugin | Works, but the plugin returns a tier only and the classifier context is the last human ask plus 3 turns at 200 chars each | Too narrow for history-, cache-, and ledger-aware routing; the pre-call hook is the right seam. Its heuristic scorer is a free baseline for the eval |
+| Provider switching mid-conversation | LiteLLM translates tool-call formats; `reasoning_content` / thinking blocks from one provider do not transfer to another | Cross-provider switch penalty in the scorer |
+
 ## 3. Architecture
 
 ```
-client app ──► /v1/messages (model: "auto") ──► Router
-                                                  │
-                     ┌────────────────────────────┼─────────────────────────────┐
-                     ▼                            ▼                             ▼
-             Fast-path rules             Jev judge (1 call,            Cache ledger +
-             (tool-result continuation,  ~6 questions, minimized       routing history
-              context overflow, ...)     state)                        (per conversation)
-                     │                            │                             │
-                     └──────────────► Deterministic scorer ◄────────────────────┘
-                                      utility(model, effort) = −cost − quality risk − switch cost
-                                                  │
-                                                  ▼
-                                    Provider adapter (Anthropic first)
-                                    appends cache_control, executes, records usage
-                                                  │
-                                                  ▼
-                                    Ledger update + decision log
+client app ──► LiteLLM proxy  POST /v1/chat/completions  {model: "jev-auto", messages, tools, stream}
+                     │
+                     ▼
+        JevRouterPlugin.async_pre_call_hook            (the router; all logic lives in a
+                     │                                  host-agnostic `jev_router.core` package)
+     ┌───────────────┼──────────────────────────┐
+     ▼               ▼                          ▼
+ Fast-path rules   Jev judge (1 call,        Ledger in LiteLLM DualCache
+ (tool-result      ~6 questions,             (incumbent, cache state,
+  continuation…)   minimized state)           routing history)
+     │               │                          │
+     └──────► Deterministic scorer ◄────────────┘
+              utility(model, effort) = −cost − quality risk − switch cost
+                     │
+                     ▼
+        rewrites data["model"], data["reasoning_effort"], adds cache_control,
+        stamps data["metadata"]["jev_router"] (decision, distributions, predictions)
+                     │
+                     ▼
+        LiteLLM Router ──► Anthropic / OpenAI ──► streamed OpenAI-format response
+                     │
+                     ▼
+        JevRouterPlugin.async_log_success_event   (final usage, streaming or not)
+        → ledger update (observed cached tokens, timestamp) → decision log row
 ```
 
 ### 3.1 Components
 
-**`RequestNormalizer`** turns the incoming request (Anthropic Messages shape in
-phase 1) into an internal `Turn` with: message list, tool definitions, system
-prompt, token estimate, and structural signals (last assistant message ended in
-`tool_use`? images present? which tools were called recently?).
+**`RequestNormalizer`** turns the incoming OpenAI-format request (`data` from
+the hook) into an internal `Turn` with: message list, tool definitions, system
+prompt, token estimate, and structural signals (last assistant message carried
+`tool_calls` and the tail is `role: tool` messages? images present? which tools
+were called recently?). It also resolves the conversation id: the
+`x-litellm-session-id` / `x-litellm-trace-id` value from metadata when present,
+otherwise a hash of the system prompt plus the first user message plus the
+LiteLLM `user` field, which is stable across turns because the served history
+is append-only.
 
 **`FastPath`** applies hard rules before Jev is called. These are cases where a
 semantic judgment is not needed or not allowed:
 
 | Rule | Decision | Why |
 |---|---|---|
-| The turn is delivering `tool_result` blocks for a pending `tool_use` | Incumbent model, same effort, Jev skipped | Mid-loop switch breaks thinking-block continuity and the cache; adds no value |
+| The turn is delivering `role: tool` results for pending `tool_calls` | Incumbent model, same effort, Jev skipped | Mid-loop switch breaks thinking-block continuity and the cache; adds no value |
 | No incumbent (first turn) and the request is over the small model's context | Filter candidates by context | Capability, not judgment |
 | Conversation has no ledger entry and the message is under a configurable size | Default tier from config, Jev still consulted | Cold start |
 | Jev unreachable, 429, or timeout (budget 1.5 s) | Incumbent if present, else configured default | Fail open, never block on Jev |
@@ -225,13 +276,24 @@ set (final wording is tuned in the eval loop, section 5):
 
 Each answer's distribution and confidence is stored, not just the winner.
 
-**`CacheLedger`** stores per conversation: incumbent model and effort, the
-timestamp of the last request start, the cached-prefix token count reported by
-the last response, the provider's TTL, and the last known total prompt size. It
-predicts, for each candidate: `cached_tokens(m)` = last cached prefix if
-`m == incumbent` and `now − last_start < ttl`, else 0. It is corrected from
-actual `usage` after every call, so drift (an upstream prompt change, a lost
-cache) is caught within one turn.
+**`CacheLedger`** lives in the `DualCache` LiteLLM hands to the hook (Redis
+when configured, in-memory otherwise) under `jev_router:<conversation_id>`
+with a TTL a little over the provider cache TTL. It stores: incumbent model and
+effort, the timestamp of the last request start, the cached-prefix token count
+from the last response, the split of that prefix into tools-plus-system versus
+messages (estimated from token counts), the provider's TTL, and the last known
+total prompt size. It predicts `cached_tokens(m, e)` for each candidate:
+
+| Candidate relative to incumbent | Predicted cached tokens |
+|---|---|
+| Same model, same effort, within TTL | Full last cached prefix |
+| Same model, different effort, within TTL | Tools-plus-system portion only (messages cache is invalidated by an effort change on this path) |
+| Different model, any provider | 0 |
+| Anything past TTL | 0 |
+
+It is corrected from the real `usage` in `async_log_success_event` after
+every call, so drift (an upstream prompt change, a lost cache, an expired TTL)
+is caught within one turn, and predicted-versus-observed is logged.
 
 **`Scorer`** is pure code. For each eligible candidate `(m, e)`:
 
@@ -246,44 +308,91 @@ switch_cost  = 0 if (m, e) == incumbent
 utility      = −λ_cost × (input_cost + output_cost) − λ_quality × quality_risk − switch_cost
 ```
 
-Overrides applied after scoring: `quality_complaint` above threshold raises the
-floor to incumbent tier + 1; confidence on `required_tier` below a threshold
-collapses the choice to the incumbent (or default). `λ_cost`, `λ_quality`, the
-penalty table, and thresholds live in config and are what the eval loop tunes.
-Effort-only moves within the incumbent model carry no cache cost and no
-thinking loss, so they win whenever the tier gap is small, which is the
-behaviour Anthropic's cost guidance predicts.
+`switch_cost` also adds a cross-provider constant when `m` is on a different
+provider than the incumbent (tool-call format translation and total loss of
+reasoning context). Overrides applied after scoring: `quality_complaint` above
+threshold raises the floor to incumbent tier + 1; confidence on
+`required_tier` below a threshold collapses the choice to the incumbent (or
+default). `λ_cost`, `λ_quality`, the penalty table, and thresholds live in
+config and are what the eval loop tunes. Effort-only moves within the
+incumbent model keep the tools-plus-system cache and carry no thinking loss,
+so they still beat a model switch whenever the tier gap is small.
 
-**`ProviderAdapter`** executes the call. Phase 1 is Anthropic only via the
-official SDK: streaming, adaptive thinking, one explicit `cache_control`
-breakpoint on the last static system block plus top-level automatic caching
-for the growing tail, effort pinned per route, `fallbacks: "default"` for
-refusal handling on Fable 5.1 / Opus 5, and the effort-change system message
-when the router changes effort on Opus 5 / Fable 5.1. The adapter returns the
-response and its `usage`, which feeds the ledger.
+**Execution** is LiteLLM's. The hook sets `data["model"]` to the tier's
+`model_name`, `data["reasoning_effort"]` to the tier's effort (Anthropic tiers
+only; OpenAI reasoning models take their own `reasoning_effort` values from
+config), and places `cache_control` on the last system content block and on
+the last user message so both providers' prefix caches see a stable prefix
+and a moving tail. Anthropic thinking stays adaptive and is pinned per tier so
+it never varies within a route. Client-supplied `model` values other than the
+router alias pass through untouched.
+
+**`JevRouterPlugin`** is the thin LiteLLM `CustomLogger` subclass: it owns no
+logic, only wiring. `async_pre_call_hook` calls `core.decide(turn, ledger)`
+and applies the result; `async_log_success_event` (which LiteLLM calls once
+per request with the assembled response for streaming and non-streaming
+alike) calls `core.observe(usage)`; `async_post_call_failure_hook` records
+failures so a provider error does not leave a stale incumbent. A shadow flag
+makes the hook compute and log the decision but leave `data["model"]` on the
+configured default. The same `core` package is importable by the CLI and the
+eval harness with no LiteLLM present.
 
 **`DecisionLog`** writes one row per turn: state hash, Jev answers, candidate
 utilities, chosen route, predicted vs. observed cache tokens, cost, latency of
 Jev and of the model. This is the dataset the eval loop and the dashboard read.
 
-### 3.2 Candidate configuration (phase 1)
+### 3.2 Configuration (phase 1)
+
+LiteLLM's `config.yaml` owns credentials, deployments, and the default cache
+injection points; `router.yaml` owns everything the scorer needs. Tier names
+in `router.yaml` must match `model_name` entries in `config.yaml`.
 
 ```yaml
-objective: { lambda_cost: 1.0, lambda_quality: 3.0 }
-default_route: { model: claude-sonnet-5, effort: medium }
-jev: { model: jev-latest, timeout_ms: 1500, min_confidence: 0.55 }
-cache: { anthropic_ttl_seconds: 300 }
-tiers:                       # ordered; index is the tier number
-  - { model: claude-haiku-4-5, effort: null,    price_in: 1.00, price_out: 5.00,  cache_read_mult: 0.10, tools: true, vision: true, context: 200000 }
-  - { model: claude-sonnet-5,  effort: low,     price_in: 2.00, price_out: 10.00, cache_read_mult: 0.10, tools: true, vision: true, context: 1000000 }
-  - { model: claude-sonnet-5,  effort: high,    price_in: 2.00, price_out: 10.00, cache_read_mult: 0.10, tools: true, vision: true, context: 1000000 }
-  - { model: claude-opus-5,    effort: medium,  price_in: 5.00, price_out: 25.00, cache_read_mult: 0.10, tools: true, vision: true, context: 1000000 }
-  - { model: claude-opus-5,    effort: xhigh,   price_in: 5.00, price_out: 25.00, cache_read_mult: 0.10, tools: true, vision: true, context: 1000000 }
+# config.yaml (LiteLLM)
+model_list:
+  - model_name: haiku
+    litellm_params: { model: anthropic/claude-haiku-4-5, api_key: os.environ/ANTHROPIC_API_KEY }
+  - model_name: sonnet
+    litellm_params: { model: anthropic/claude-sonnet-5, api_key: os.environ/ANTHROPIC_API_KEY }
+  - model_name: opus
+    litellm_params: { model: anthropic/claude-opus-5, api_key: os.environ/ANTHROPIC_API_KEY }
+  - model_name: gpt-small
+    litellm_params: { model: openai/<small model>, api_key: os.environ/OPENAI_API_KEY }
+  - model_name: gpt-large
+    litellm_params: { model: openai/<frontier model>, api_key: os.environ/OPENAI_API_KEY }
+  - model_name: jev-auto           # the alias apps call; the hook rewrites it
+    litellm_params: { model: anthropic/claude-sonnet-5, api_key: os.environ/ANTHROPIC_API_KEY }
+litellm_settings:
+  callbacks: jev_router.litellm_plugin.proxy_handler_instance
+  cache: true
+  cache_params: { type: redis }    # DualCache backing for the ledger
 ```
 
-Prices are the first-party Anthropic rates as of 2026-06; the config is the
-single place they live. Fable 5.1 can be appended as a top tier once the
-account has 30-day retention (it is not served under zero-data-retention).
+```yaml
+# router.yaml (jev_router)
+alias: jev-auto
+objective: { lambda_cost: 1.0, lambda_quality: 3.0 }     # quality first
+default_route: { tier: sonnet-medium }
+jev: { model: jev-latest, timeout_ms: 1500, min_confidence: 0.55 }
+cache_ttl_seconds: { anthropic: 300, openai: 300 }
+switch_cost: { base: 0.002, cross_provider: 0.01, continuity_weight: 0.02, thinking_loss: 0.005 }   # in dollars-equivalent
+tiers:                              # ordered by capability; index is the tier number
+  - { name: haiku,         model: haiku,     provider: anthropic, effort: null,   price_in: 1.00, price_out: 5.00,  cache_read: 0.10, cache_write: 1.25, min_cache_prefix: 4096, context: 200000 }
+  - { name: gpt-small,     model: gpt-small, provider: openai,    effort: low,    price_in: TBD,  price_out: TBD,   cache_read: 0.10, cache_write: 1.00, min_cache_prefix: 1024, context: TBD }
+  - { name: sonnet-low,    model: sonnet,    provider: anthropic, effort: low,    price_in: 2.00, price_out: 10.00, cache_read: 0.10, cache_write: 1.25, min_cache_prefix: 1024, context: 1000000 }
+  - { name: sonnet-medium, model: sonnet,    provider: anthropic, effort: medium, price_in: 2.00, price_out: 10.00, cache_read: 0.10, cache_write: 1.25, min_cache_prefix: 1024, context: 1000000 }
+  - { name: sonnet-high,   model: sonnet,    provider: anthropic, effort: high,   price_in: 2.00, price_out: 10.00, cache_read: 0.10, cache_write: 1.25, min_cache_prefix: 1024, context: 1000000 }
+  - { name: gpt-large,     model: gpt-large, provider: openai,    effort: high,   price_in: TBD,  price_out: TBD,   cache_read: 0.10, cache_write: 1.25, min_cache_prefix: 1024, context: TBD }
+  - { name: opus-medium,   model: opus,      provider: anthropic, effort: medium, price_in: 5.00, price_out: 25.00, cache_read: 0.10, cache_write: 1.25, min_cache_prefix: 512,  context: 1000000 }
+  - { name: opus-xhigh,    model: opus,      provider: anthropic, effort: xhigh,  price_in: 5.00, price_out: 25.00, cache_read: 0.10, cache_write: 1.25, min_cache_prefix: 512,  context: 1000000 }
+```
+
+Anthropic prices are first-party rates as of 2026-06. OpenAI entries are
+marked TBD: which two OpenAI models to include and their current prices are
+filled from OpenAI's price list at implementation time (open question 1). The
+tier order across providers is a hypothesis the phase 2 eval checks; Jev's
+`required_tier` is defined on the four semantic levels, and the mapping from
+those levels to this ladder is config.
 
 ### 3.3 Why Jev does not pick the model directly
 
@@ -301,77 +410,89 @@ configurable alternative judge for the comparison.
 
 ## 4. Delivery phases
 
-### Phase 0: scaffolding (about 1 day)
+### Phase 0: scaffolding and LiteLLM spike (about 2 days)
 
-- `uv`-managed Python 3.12 project, `ruff`, `pyright`, `pytest`.
+- `uv`-managed Python 3.12 project, `ruff`, `pyright`, `pytest`; pinned
+  `litellm[proxy]` version recorded in the README.
 - `Judge` protocol with three implementations: `JevJudge` (typesafe-sdk),
-  `AdapterJudge` (system-one-adapter-python backed by Claude, for development
-  before the early-access key arrives), `RecordedJudge` (fixtures for tests).
-- Config loader for the YAML above; price table; token estimator (Anthropic
-  `count_tokens` for real numbers, a chars/4 heuristic for the Jev state budget).
+  `AdapterJudge` (system-one-adapter-python, for CI without network),
+  `RecordedJudge` (fixtures).
+- Spike that de-risks the host: a no-op plugin that rewrites `model` and sets
+  `reasoning_effort` on the pinned LiteLLM version, and a script that makes
+  two identical requests per tier and asserts `cached_tokens > 0` on the
+  second, streaming and non-streaming, for Anthropic and OpenAI. Any tier
+  whose effort value LiteLLM rejects is fixed or dropped here.
+- Config loader for `router.yaml`, token estimator (LiteLLM's
+  `token_counter` for the ledger split, chars/4 for the Jev state budget).
 
-### Phase 1: routing core and Anthropic execution (about 1 week)
+### Phase 1: routing core inside the proxy (about 1 week)
 
-- `RequestNormalizer`, `FastPath`, `StateBuilder` (with budget enforcement and
-  redaction hook), `JevJudge` with the six questions, `CacheLedger` (SQLite),
-  `Scorer`, Anthropic `ProviderAdapter`, `DecisionLog` (SQLite, JSONL export).
-- FastAPI service exposing `POST /v1/messages` that accepts the Anthropic
-  Messages request shape with `model: "auto"` and a required
-  `conversation_id` (header or metadata), streams the response, and adds a
-  `x-router-decision` header plus a `GET /decisions/{conversation_id}` endpoint.
-- CLI that replays a saved conversation turn by turn and prints the decision
-  table (Jev answers, utilities, cache prediction vs. observed).
-- Unit tests for the scorer (cache makes incumbent win on a routine follow-up;
-  a quality complaint forces an upgrade; tool-result turns never switch;
-  effort-only downgrade preferred over model downgrade when tiers are adjacent).
-- Integration test: two identical requests show `cache_read_input_tokens > 0`
-  on the second, and a forced model switch shows it drop to zero.
+- `jev_router.core`: `RequestNormalizer`, `FastPath`, `StateBuilder` (budget
+  enforcement, rolling summary, redaction hook), `JevJudge` with the six
+  questions, `CacheLedger`, `Scorer`, `DecisionLog` (SQLite plus JSONL).
+- `jev_router.litellm_plugin`: the `CustomLogger` wiring described above,
+  shadow flag, and decision stamped into `metadata` so it appears in LiteLLM
+  spend logs and any configured observability sink.
+- CLI that replays a saved conversation turn by turn against `core` (no
+  proxy needed) and prints the decision table: Jev answers, per-tier utility,
+  cache prediction versus observed.
+- Unit tests for the scorer (cache makes the incumbent win on a routine
+  follow-up; quality complaint forces an upgrade; tool-result turns never
+  switch; effort-only downgrade beats a model switch for adjacent tiers;
+  cross-provider switch needs a larger tier gap than same-provider).
+- Integration tests against the running proxy: the two-request cache check
+  from phase 0 now through the `jev-auto` alias; a forced model switch shows
+  cached tokens drop to zero and the ledger records it.
 
 ### Phase 2: evaluation and tuning (about 1 week)
 
-- Build an eval set of multi-turn conversations: synthetic scripts covering
-  each `task_type` × tier, plus tool-loop transcripts, plus adversarial cases
-  (long irrelevant history, mid-task topic switch, "that's wrong, try again").
+- Eval set of multi-turn conversations: synthetic scripts covering each
+  `task_type` × tier, tool-loop transcripts, and adversarial cases (long
+  irrelevant history, mid-task topic switch, "that's wrong, try again").
   Label each turn's minimum acceptable tier with a strong-model judge and
   spot-check by hand.
-- Shadow mode: the service routes with the default tier but logs what the Jev
-  path would have chosen. Lets us collect real traffic decisions without risk.
-- Metrics: routing accuracy against labels, cost per completed conversation vs.
-  an all-Opus baseline, cache hit rate, switch rate per conversation, Jev p50
-  and p95 latency, calibration curve of `required_tier` confidence.
-- Baselines to beat: always-Opus, always-Sonnet, cheapest-eligible rules
-  (jev-router style), and the single-`choice`-over-models judge.
-- Tune `λ`, penalty table, thresholds, and question wording against the set.
+- Shadow mode on the proxy to collect real decisions without acting on them.
+- Metrics: routing accuracy against labels, cost per completed conversation
+  versus an all-Opus baseline, cache hit rate, switch rate per conversation,
+  cross-provider switch rate, Jev p50 and p95 latency, calibration curve of
+  `required_tier` confidence.
+- Baselines to beat: always-Opus, always-Sonnet, LiteLLM's built-in
+  heuristic `complexity_router`, cheapest-eligible rules (jev-router style),
+  and the single-`choice`-over-models judge.
+- Tune `λ`, penalty table, switch costs, thresholds, and question wording.
 
-### Phase 3: multi-provider (optional, after phase 2 results)
+### Phase 3: hardening (after phase 2 results)
 
-- OpenAI and Gemini adapters with their own cache predictors (automatic
-  prefix caching, no breakpoints). Cross-provider switches carry an extra
-  format-translation cost (tool-call shapes differ, thinking blocks do not
-  transfer at all), which becomes a config constant in `switch_cost`.
-- Per-provider price tables and TTL semantics in the ledger.
+- Postgres-backed decision log if the proxy already runs one; dashboard over
+  the log.
+- Gemini tier if wanted (LiteLLM already normalizes its cache usage).
+- Optional upstream contribution: a LiteLLM passthrough for Anthropic's
+  per-message effort change, which would make effort-only moves free of
+  messages-cache loss on Opus 5 and Fable 5.1.
 
 ## 5. Proposed repository layout
 
 ```
 jev_router/
-  config.py          # YAML schema, price table, tiers
-  normalize.py       # RequestNormalizer, Turn
-  fastpath.py
-  state.py           # StateBuilder, budget, redaction, rolling summary
-  judge/
-    base.py          # Judge protocol, Judgment dataclass
-    jev.py           # typesafe-sdk implementation, the question set
-    adapter.py       # system-one-adapter-python fallback
-    recorded.py
-  ledger.py          # CacheLedger + RoutingHistory (SQLite)
-  scorer.py          # pure functions, fully unit-tested
-  providers/
-    base.py
-    anthropic.py
-  service.py         # FastAPI /v1/messages
+  core/
+    config.py        # router.yaml schema, tiers, prices
+    normalize.py     # RequestNormalizer, Turn, conversation id derivation
+    fastpath.py
+    state.py         # StateBuilder, budget, redaction, rolling summary
+    judge/
+      base.py        # Judge protocol, Judgment dataclass
+      jev.py         # typesafe-sdk implementation, the question set
+      adapter.py     # system-one-adapter-python fallback (CI)
+      recorded.py
+    ledger.py        # CacheLedger over a small KV protocol (DualCache or dict)
+    scorer.py        # pure functions, fully unit-tested
+    log.py           # DecisionLog
+    router.py        # decide() / observe() entry points used by every host
+  litellm_plugin.py  # CustomLogger wiring; proxy_handler_instance
   cli.py             # replay + explain
-  log.py             # DecisionLog
+deploy/
+  config.yaml        # LiteLLM proxy config (models, callbacks, redis)
+  router.yaml
 eval/
   conversations/     # JSONL eval set
   label.py           # strong-model labeling
@@ -391,32 +512,24 @@ docs/
 | Added latency (70–500 ms plus network) on every non-fast-path turn | Fast path skips Jev on tool loops; timeout 1.5 s; fail open |
 | Cache prediction drifts from reality (prompt changed upstream, TTL expired) | Ledger corrected from every response's `usage`; predicted vs. observed logged |
 | Router accidentally rewrites history (breaks cache, rejected by Fable 5.1) | Served history is append-only by construction; test asserts byte-identical prefix between turns |
-| Effort-change beta unavailable on a route | Adapter falls back to top-level effort and the ledger records the messages-cache loss |
+| LiteLLM version drift: effort gating, cache accounting, hook behaviour have all regressed before | Pin the version; phase 0 spike is the regression test; upgrade only with it green |
+| Apps use LiteLLM's Anthropic-format `/v1/messages`, where the hook is bypassed | Documented as unsupported; requests there get the alias's default deployment with no routing |
+| Effort change loses the messages cache on this path | Modelled in the ledger; measured in phase 2; upstream passthrough is the phase 3 fix |
+| Ledger lost on proxy restart without Redis | Redis configured in `config.yaml`; in-memory fallback degrades to cold-start routing, never to errors |
 
-## 7. Open questions for you
+## 7. Remaining open questions
 
-Answers change the plan; defaults are what will be built if unanswered.
+Defaults will be built if unanswered.
 
-1. **Language and shape.** Default: Python 3.12 library plus a FastAPI service
-   speaking the Anthropic Messages API with `model: "auto"`. Alternative: a
-   TypeScript service, or an OpenAI-compatible `/v1/chat/completions` front so
-   existing apps drop in without changes.
-2. **Candidate models.** Default: Anthropic first-party only in phases 1–2
-   (Haiku 4.5, Sonnet 5, Opus 5, optionally Fable 5.1). Do you want OpenAI or
-   Gemini candidates from the start? That pulls phase 3 forward and adds
-   format-translation work.
-3. **Jev access.** Do you already have a `TYPESAFE_API_KEY`, or should phase 0
-   run on the LLM-backed adapter and OpenRouter until it arrives?
-4. **Objective.** Default is "quality first, cost second" (`λ_quality` = 3 ×
-   `λ_cost`). If this is a cost-driven product, say so and the defaults flip.
-5. **Conversation identity.** The router needs a stable `conversation_id` per
-   thread to keep the ledger. Can the calling apps supply one, or should the
-   router derive it from a hash of the first user message plus system prompt?
-6. **Privacy.** Is sending a minimized, redacted transcript to TypeSafe
-   acceptable for the test product, or must Jev see only structural signals?
-7. **Traffic profile.** Typical gap between turns matters for the TTL choice
-   (under 5 minutes keeps the default cache warm; 5–60 minutes justifies the
-   1-hour TTL or a keep-alive). Any data on this?
+1. **Which OpenAI models.** Default: one small and one frontier model from the
+   current GPT-5.x line, prices taken from OpenAI's price list when the
+   config is written. Name them if you have preferences.
+2. **Existing LiteLLM deployment.** Is there a proxy already running with a
+   `config.yaml` and Redis, and which version? Default: a fresh pinned
+   deployment under `deploy/`.
+3. **Traffic profile.** Typical gap between turns decides the TTL strategy
+   (under 5 minutes keeps the default cache warm on both providers). Default:
+   assume interactive traffic, 5-minute TTL, no keep-alives.
 
 ## 8. Sources
 
@@ -425,4 +538,5 @@ Answers change the plan; defaults are what will be built if unanswered.
 - Access paths: [OpenRouter jev-1.13](https://openrouter.ai/typesafe/jev-1.13), [OpenRouter jev-latest](https://openrouter.ai/~typesafe/jev-latest), [Vercel AI Gateway](https://vercel.com/changelog/typesafe-ai-jev-now-available-on-ai-gateway), [LiteLLM pass-through](https://docs.litellm.ai/docs/pass_through/typesafe)
 - Patterns and limits: [awesome-jev-by-typesafe](https://github.com/24601/awesome-jev-by-typesafe), [Jev project reference gist](https://gist.github.com/pjburnhill/adf8d28efcad9df037bfdece178ef965), [actionbox review](https://actionbox.cloud/blog/typesafe-ai-jev-review/), [orcarouter](https://www.orcarouter.ai/blog/jev-typesafe-system-one-what-we-know)
 - Prior art: [prismhq/jev-router](https://github.com/prismhq/jev-router), [Bifrost proposal](https://github.com/maximhq/bifrost/issues/7278), [9router proposal](https://github.com/decolua/9router/issues/4126), [OmniRoute proposal](https://github.com/diegosouzapw/OmniRoute/issues/13987), [RouteLLM overview](https://neuraltrust.ai/blog/llm-model-routing), [routing survey arXiv 2603.04445](https://arxiv.org/pdf/2603.04445), [SLM front-door routing arXiv 2604.02367](https://arxiv.org/abs/2604.02367), [2026 router comparisons](https://dev.to/artem42/top-llm-routing-tools-in-2026-architectures-benchmarks-and-production-trade-offs-ife)
+- LiteLLM: [call hooks](https://docs.litellm.ai/docs/proxy/call_hooks), [prompt caching](https://docs.litellm.ai/docs/completion/prompt_caching), [auto-inject cache checkpoints](https://docs.litellm.ai/docs/tutorials/prompt_caching), [Anthropic effort](https://docs.litellm.ai/docs/providers/anthropic_effort), [request headers](https://docs.litellm.ai/docs/proxy/request_headers), [beta auto routing](https://docs.litellm.ai/docs/proxy/auto_routing), [custom_logger.py](https://github.com/BerriAI/litellm/blob/main/litellm/integrations/custom_logger.py); issues [#30469](https://github.com/BerriAI/litellm/issues/30469) and [#27518](https://github.com/BerriAI/litellm/issues/27518) (hook bypassed on `/v1/messages`), [#11789](https://github.com/BerriAI/litellm/issues/11789) (streaming cache cost, closed), [#41067](https://github.com/BerriAI/litellm/issues/41067) (bridged streaming cache accounting, open), [#25957](https://github.com/BerriAI/litellm/issues/25957) (effort gating lag)
 - Caching: [OpenAI prompt caching](https://developers.openai.com/api/docs/guides/prompt-caching), [OpenAI Prompt Caching 201](https://developers.openai.com/cookbook/examples/prompt_caching_201), [Gemini context caching](https://ai.google.dev/gemini-api/docs/caching), [Gemini implicit caching](https://developers.googleblog.com/gemini-2-5-models-now-support-implicit-caching/); Anthropic caching, thinking-block, and effort facts from the Claude API reference bundled with this session
