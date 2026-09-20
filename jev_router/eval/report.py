@@ -219,7 +219,7 @@ def to_markdown(report: dict[str, Any]) -> str:
         "",
         f"- **Mode**: {report['mode']} ({report['target']})",
         f"- **Run**: {report['run_id']} at {report['started_at']}, {report['duration_s']}s",
-        f"- **Router config**: `{report['router_config_path']}` — "
+        f"- **Router**: `{cfg.get('alias')}` from `{report['router_config_path']}` — "
         f"λ_cost={obj.get('lambda_cost')}, λ_quality={obj.get('lambda_quality')}, "
         f"tier_penalty={cfg.get('tier_penalty')}, switch_cost={cfg.get('switch_cost')}, "
         f"complaint_threshold={jev_cfg.get('complaint_threshold')}, min_confidence={jev_cfg.get('min_confidence')}",

@@ -2,7 +2,7 @@
 
 Two backends:
 
-* ``LiveBackend`` sends each turn to a running LiteLLM proxy (``deploy/``) as ``jev-auto`` and
+* ``LiveBackend`` sends each turn to a running LiteLLM proxy (``deploy/``) as the router's alias and
   correlates it with the plugin's ``decision``/``observed`` events in ``JEV_ROUTER_LOG_FILE``.
   Real providers, real replies, real cache accounting, real cost.
 * ``SimulateBackend`` drives the router core in-process with the real Jev judge, a simulated
@@ -129,10 +129,13 @@ def scripted_tool_messages(turn: Turn, call_id: str) -> list[dict[str, Any]]:
 
 
 class LiveBackend:
-    def __init__(self, base_url: str, api_key: str, decisions: Path, max_tokens: int = 1200) -> None:
+    def __init__(
+        self, base_url: str, api_key: str, decisions: Path, max_tokens: int = 1200, model: str = "jev-auto"
+    ) -> None:
         self.client = httpx.AsyncClient(base_url=base_url, headers={"Authorization": f"Bearer {api_key}"}, timeout=300)
         self.decisions = decisions
         self.max_tokens = max_tokens
+        self.model = model  # the router's alias
         self.offset = self._size()
         self.target = base_url
         self.cache_source = "observed"
@@ -180,7 +183,7 @@ class LiveBackend:
         rec: TurnRecord,
         tier_levels: dict[str, int],
     ) -> None:
-        body: dict[str, Any] = {"model": "jev-auto", "messages": messages, "max_tokens": self.max_tokens}
+        body: dict[str, Any] = {"model": self.model, "messages": messages, "max_tokens": self.max_tokens}
         if tools:
             body["tools"] = tools
         t0 = time.time()

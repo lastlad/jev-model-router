@@ -1,11 +1,15 @@
-# Router configuration. Schema: jev_router/core/config.py. Design: docs/IMPLEMENTATION_PLAN_v0.md.
+# Router `jev-auto-gpt`: the GPT-5.6 ladder. Schema: jev_router/core/config.py. Design: docs/IMPLEMENTATION_PLAN_v0.md.
+#
+# Every file in this directory is one router; the proxy serves them all at once and dispatches on
+# the model name a request asks for (the `alias`). Deployments the tiers point at are shared and
+# live in deploy/config.yaml. This file is the fully annotated one; the others note only what differs.
 #
 # Each turn is scored per tier as  utility = -lambda_cost * cost - lambda_quality * quality_risk - switch_cost
 # and the highest utility wins. All three terms are in US dollars for *this turn*, so keep the constants
 # below in proportion to what a turn actually costs (typically $0.001-0.05).
 
-alias: jev-auto        # requests with this model name are routed; everything else passes through untouched
-shadow: false          # true: compute and log the decision but serve from the `jev-auto` deployment
+alias: jev-auto-gpt    # requests with this model name are routed; everything else passes through untouched
+shadow: false          # true: compute and log the decision but serve from the alias's own deployment
 
 objective:
   lambda_cost: 1.0     # weight on the turn's predicted dollar cost (input, cache reads, expected output)
@@ -61,9 +65,6 @@ tiers:
   - { name: sol-medium,    model: sol,   effort: medium, level: 2 }
   - { name: sol-high,      model: sol,   effort: high,   level: 3 }
   - { name: sol-xhigh,     model: sol,   effort: xhigh,  level: 3 }
-  # With Anthropic access, add Claude deployments to deploy/config.yaml and tiers such as:
-  # - { name: haiku,         model: haiku,  effort: null,   level: 0 }
-  # - { name: sonnet-low,    model: sonnet, effort: low,    level: 1 }
-  # - { name: sonnet-high,   model: sonnet, effort: high,   level: 2 }
-  # - { name: opus-xhigh,    model: opus,   effort: xhigh,  level: 3 }
+  # Claude tiers (haiku / sonnet / opus deployments in config.yaml) can be mixed in here; see
+  # claude.yaml for a Claude-only ladder.
 default: terra-medium          # used when Jev is unavailable on a fresh conversation, or no tier is eligible

@@ -80,3 +80,21 @@ class RouterConfig(BaseModel):
 def load_config(path: str | Path) -> RouterConfig:
     with open(path) as f:
         return RouterConfig.model_validate(yaml.safe_load(f))
+
+
+def load_configs(path: str | Path) -> list[RouterConfig]:
+    """One router per file. `path` is a router.yaml, or a directory of them (*.yaml, sorted by name).
+
+    Each router must have a distinct `alias`; the proxy dispatches on the request's model name.
+    """
+    path = Path(path)
+    files = sorted(p for p in path.iterdir() if p.suffix in (".yaml", ".yml")) if path.is_dir() else [path]
+    if not files:
+        raise ValueError(f"no router configs found in {path}")
+    cfgs = [load_config(f) for f in files]
+    seen: dict[str, Path] = {}
+    for cfg, f in zip(cfgs, files, strict=True):
+        if cfg.alias in seen:
+            raise ValueError(f"router alias {cfg.alias!r} is defined in both {seen[cfg.alias]} and {f}")
+        seen[cfg.alias] = f
+    return cfgs

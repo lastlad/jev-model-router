@@ -47,7 +47,7 @@ def proxy(jev_port: int, decisions_log: Path) -> Iterator[str]:
         **os.environ,
         "TYPESAFE_API_KEY": "fake",
         "TYPESAFE_BASE_URL": f"http://127.0.0.1:{jev_port}",
-        "JEV_ROUTER_CONFIG": str(HERE / "router.yaml"),
+        "JEV_ROUTER_CONFIG": str(HERE / "routers"),
         "JEV_ROUTER_LOG_FILE": str(decisions_log),
         "PYTHONPATH": str(ROOT),
     }

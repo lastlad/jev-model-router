@@ -93,7 +93,10 @@ def _result(*runs):
         run_id="r",
         started_at=0.0,
         duration_s=1.0,
-        router_config={"tiers": [{"name": "t0", "level": 0}, {"name": "t1", "level": 1}, {"name": "t2", "level": 2}]},
+        router_config={
+            "alias": "jev-test",
+            "tiers": [{"name": "t0", "level": 0}, {"name": "t1", "level": 1}, {"name": "t2", "level": 2}],
+        },
         router_config_path="router.yaml",
         target="x",
         tier_levels={"t0": 0, "t1": 1, "t2": 2},
@@ -141,6 +144,7 @@ def test_report_and_markdown_render():
     assert report["conversations"][0]["turns"][1]["verdict"] == "over"
     md = to_markdown(report)
     assert "# Router evaluation: d" in md and "| c | 1→2 | 1→0-1 |" in md
+    assert "**Router**: `jev-test`" in md
     assert "complaint escalation(s) on turns not labelled" in md
     assert "tiers never selected: t0" in md
 
@@ -166,7 +170,7 @@ async def test_simulate_backend_end_to_end(dataset_file):
     backend = SimulateBackend(cfg, RecordedJudge(j1, j2, j3), "router.yaml")
     seen = []
     result = await run_dataset(
-        ds, backend, "tests/integration/router.yaml", "simulate", on_turn=lambda r, t: seen.append(t)
+        ds, backend, "tests/integration/routers/mixed.yaml", "simulate", on_turn=lambda r, t: seen.append(t)
     )
     [run] = result.conversations
     reasons = [t.reason for t in run.turns]

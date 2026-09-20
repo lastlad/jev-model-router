@@ -4,8 +4,9 @@ A LiteLLM proxy plugin that uses TypeSafe's Jev (a "System One" decision
 model) to judge each conversation turn, then routes it to the cheapest
 `(model, effort)` that clears the quality bar, accounting for routing history
 and prompt-cache savings on the incumbent model. Applications call the proxy
-with `model: "jev-auto"` and get an ordinary OpenAI- or Anthropic-format
-response back.
+with a router alias as the model (`jev-auto-gpt`, `jev-auto-claude`,
+`jev-auto-claude-code`; one proxy serves them all) and get an ordinary
+OpenAI- or Anthropic-format response back.
 
 ```
 app ──▶ LiteLLM proxy ──▶ jev_router plugin ──▶ Jev: "what does this turn need?"
@@ -19,9 +20,11 @@ app ──▶ LiteLLM proxy ──▶ jev_router plugin ──▶ Jev: "what doe
 
 ## Quickstart
 
-You need Python 3.11+, [uv](https://docs.astral.sh/uv/), Docker, and keys for
-Jev (`TYPESAFE_API_KEY`) and at least one provider (`OPENAI_API_KEY` by
-default; the ladder is OpenAI-only out of the box).
+You need Python 3.11+, [uv](https://docs.astral.sh/uv/), Docker, a Jev key
+(`TYPESAFE_API_KEY`), and a provider key for the router you'll call: the
+quickstart uses `jev-auto-gpt` (`OPENAI_API_KEY`); `jev-auto-claude` needs
+`ANTHROPIC_API_KEY`; `jev-auto-claude-code` uses your claude.ai login. One
+proxy serves all three — see the table in [deploy/README.md](deploy/README.md).
 
 ```sh
 make setup                            # .venv with the package and dev tools
@@ -34,26 +37,31 @@ make preflight                        # every tier accepts its effort and gets a
 curl http://localhost:4000/v1/chat/completions \
   -H "Authorization: Bearer sk-change-me" -H "Content-Type: application/json" \
   -H "x-litellm-session-id: demo" \
-  -d '{"model":"jev-auto","messages":[{"role":"user","content":"Prove that there are infinitely many primes."}]}'
+  -d '{"model":"jev-auto-gpt","messages":[{"role":"user","content":"Prove that there are infinitely many primes."}]}'
 make logs                             # the routing decision for that request, as JSON
 ```
 
 Send the same `x-litellm-session-id` on each turn of a conversation so the
 router can track its incumbent model and cache state; without it, turns are
-chained by the previous reply's fingerprint. `deploy/README.md` covers
-Claude Code, shadow mode, and replaying saved requests.
+chained by the previous reply's fingerprint.
+
+To use the router from Claude Code — on your claude.ai subscription with Claude
+tiers, or on the GPT-5.6 ladder — see [deploy/README.md](deploy/README.md#claude-code);
+it also covers shadow mode and replaying saved requests.
 
 ## Tuning the router
 
-Everything the router weighs is in [`deploy/router.yaml`](deploy/router.yaml),
-which is annotated: the tier ladder and its levels, the cost/quality
-trade-off, switch penalties, complaint handling, and what Jev is shown.
-Deployments the tiers point at are in [`deploy/config.yaml`](deploy/config.yaml).
+Each file in [`deploy/routers/`](deploy/routers/) is one router: its alias, tier
+ladder and levels, the cost/quality trade-off, switch penalties, complaint
+handling, and what Jev is shown. [`gpt.yaml`](deploy/routers/gpt.yaml) is fully
+annotated; `claude.yaml` and `claude-code.yaml` note only what differs.
+Deployments the tiers point at are shared in [`deploy/config.yaml`](deploy/config.yaml).
 After changing either:
 
 ```sh
-make eval          # real Jev, no model calls, ~15 s: did the routing change the way you meant?
-make eval-live     # against the running proxy with real providers: cache hits and cost
+make eval                                   # real Jev, no model calls, ~15 s: did the routing change the way you meant?
+make eval ROUTER=deploy/routers/claude.yaml # any router file
+make eval-live                              # against the running proxy with real providers: cache hits and cost
 ```
 
 Both write a JSON report and a Markdown summary to `evals/reports/` and exit
@@ -64,7 +72,7 @@ for the dataset format and how to read a report.
 
 ```
 jev_router/core/        host-agnostic routing logic
-  config.py               router.yaml schema
+  config.py               router file schema; load_configs() reads a file or a directory of them
   request.py              Turn extracted from the request LiteLLM hands the hook
   identity.py             conversation id: session header, response chaining, content hash
   state.py                the minimized state Jev sees
@@ -76,7 +84,7 @@ jev_router/core/        host-agnostic routing logic
 jev_router/litellm_plugin.py   CustomLogger wiring for the proxy
 jev_router/cli.py              `jev-router replay | state | eval`
 jev_router/eval/               golden-dataset evaluation: runner (live / simulate), scoring, reports
-deploy/                        docker-compose, LiteLLM config, router.yaml
+deploy/                        docker-compose, LiteLLM config, routers/*.yaml (one router each)
 evals/                         datasets and reports for evaluating a router config
 tests/                         unit tests; tests/integration boots a real proxy with mock models
 docs/IMPLEMENTATION_PLAN_v0.md design record: rationale, decisions, and what the first eval changed

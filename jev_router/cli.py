@@ -58,7 +58,8 @@ async def _eval_run(args: argparse.Namespace) -> None:
     if not ds.conversations:
         sys.exit("no conversations selected")
     if args.mode == "live":
-        backend = LiveBackend(args.base_url, args.api_key, Path(args.decisions), args.max_tokens)
+        alias = load_config(args.config).alias
+        backend = LiveBackend(args.base_url, args.api_key, Path(args.decisions), args.max_tokens, model=alias)
     else:
         backend = make_simulate_backend(args.config, args.litellm_config)
 
@@ -125,7 +126,7 @@ def main(argv: list[str] | None = None) -> None:
     for name, fn in (("replay", _replay), ("state", _state)):
         sp = sub.add_parser(name)
         sp.add_argument("request")
-        sp.add_argument("--config", default="deploy/router.yaml")
+        sp.add_argument("--config", default="deploy/routers/gpt.yaml")
         sp.add_argument("--litellm-config", default="deploy/config.yaml")
         sp.add_argument("--call-type", default="completion")
         if name == "replay":
@@ -143,7 +144,7 @@ def main(argv: list[str] | None = None) -> None:
         default="simulate",
         help="simulate: in-process router, real Jev, no model calls (default); live: the proxy at --base-url",
     )
-    run.add_argument("--config", default="deploy/router.yaml", help="router.yaml to evaluate")
+    run.add_argument("--config", default="deploy/routers/gpt.yaml", help="the router file to evaluate")
     run.add_argument("--litellm-config", default="deploy/config.yaml", help="model_list for pricing (simulate)")
     run.add_argument("--base-url", default=os.environ.get("LITELLM_BASE", "http://127.0.0.1:4000"))
     run.add_argument("--api-key", default=os.environ.get("LITELLM_MASTER_KEY", "sk-change-me"))
@@ -154,7 +155,7 @@ def main(argv: list[str] | None = None) -> None:
     run.add_argument("--record", help="write a copy of the dataset with live replies pinned as `assistant:`")
     run.set_defaults(fn=_eval_run)
     pre = ev.add_parser("preflight", help="check every tier accepts its effort and caches, against a live proxy")
-    pre.add_argument("--config", default="deploy/router.yaml")
+    pre.add_argument("--config", default="deploy/routers/gpt.yaml")
     pre.add_argument("--base-url", default=os.environ.get("LITELLM_BASE", "http://127.0.0.1:4000"))
     pre.add_argument("--api-key", default=os.environ.get("LITELLM_MASTER_KEY", "sk-change-me"))
     pre.set_defaults(fn=_eval_preflight)

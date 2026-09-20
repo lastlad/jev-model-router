@@ -1,6 +1,7 @@
 # Common tasks. `make` with no target prints this list.
 .DEFAULT_GOAL := help
 DATASET ?= evals/datasets/routing-golden.yaml
+ROUTER  ?= deploy/routers/gpt.yaml
 
 help:            ## show targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*##' '{printf "  %-14s %s\n", $$1, $$2}'
@@ -26,13 +27,13 @@ down:            ## stop the proxy
 logs:            ## follow proxy logs (routing decisions are logged at INFO)
 	cd deploy && docker compose logs -f litellm
 
-preflight:       ## check every tier accepts its effort and caches, against the running proxy
-	.venv/bin/jev-router eval preflight
+preflight:       ## check every tier of ROUTER accepts its effort and caches, against the running proxy
+	.venv/bin/jev-router eval preflight --config $(ROUTER)
 
-eval:            ## evaluate deploy/router.yaml with real Jev, no model calls (free)
-	.venv/bin/jev-router eval run $(DATASET) --mode simulate
+eval:            ## evaluate ROUTER (default deploy/routers/gpt.yaml) with real Jev, no model calls (free)
+	.venv/bin/jev-router eval run $(DATASET) --config $(ROUTER) --mode simulate
 
-eval-live:       ## evaluate against the running proxy with real providers (costs money)
-	.venv/bin/jev-router eval run $(DATASET) --mode live
+eval-live:       ## evaluate ROUTER against the running proxy with real providers (costs money)
+	.venv/bin/jev-router eval run $(DATASET) --config $(ROUTER) --mode live
 
 .PHONY: help setup test lint fmt up down logs preflight eval eval-live

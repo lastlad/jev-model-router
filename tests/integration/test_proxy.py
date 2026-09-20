@@ -131,3 +131,25 @@ def test_observed_event_records_usage_and_cost(client, decisions):
     (o,) = decisions("observed")
     assert o["conversation_id"].startswith("s-observe:")
     assert o["tier"] and "prompt_tokens" in o and "cached_tokens" in o
+
+
+def test_routers_dispatch_by_alias_with_separate_ledgers(client, decisions):
+    """Two router files are served at once; the same session on each alias gets its own incumbent."""
+    m = [SYSTEM, {"role": "user", "content": "Refactor the parser to support nested lists."}]
+    text_a, _ = chat(client, m, "s-multi")
+    r = client.post(
+        "/v1/chat/completions",
+        json={"model": "jev-auto-gpt", "messages": m},
+        headers={"x-litellm-session-id": "s-multi"},
+    )
+    assert r.status_code == 200, r.text
+    text_b = r.json()["choices"][0]["message"]["content"]
+    assert text_b in ("from luna", "from terra", "from sol") and text_b != "from jev-auto-gpt default"
+    a, b = [d for d in decisions(at_least=2)]
+    assert a["alias"] == "jev-auto" and b["alias"] == "jev-auto-gpt"
+    assert a["decision"]["conversation_id"] == b["decision"]["conversation_id"]
+    assert b["decision"]["reason"] == "fresh", "the second router must not see the first router's incumbent"
+    assert b["decision"]["tier"] in ("luna", "terra", "sol")
+    m += [{"role": "assistant", "content": text_a}, {"role": "user", "content": "now add a unit test for it"}]
+    chat(client, m, "s-multi")
+    assert decisions(at_least=3)[2]["decision"]["reason"] in ("stay", "switch")

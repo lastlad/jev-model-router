@@ -89,3 +89,38 @@ async def test_anthropic_messages_call_type(cfg, ledger):
     }
     d, turn = await router.decide(data, "aanthropic_messages", now=1.0)
     assert turn.current_text == "hi" and turn.system_text == "You help." and d.scores
+
+
+async def test_mid_conversation_system_entries_do_not_break_identity_or_fast_path(cfg, ledger):
+    """Claude Code (mid-conversation-system beta) inserts per-turn `role: system` entries into `messages`,
+    and the last message of a tool-result turn is one of them."""
+    router = Router(cfg, RecordedJudge(judgment(level=1)), ledger)
+    tool_use = {"type": "tool_use", "id": "toolu_1", "name": "Read", "input": {"file_path": "calc.py"}}
+    tool_result = {"type": "tool_result", "tool_use_id": "toolu_1", "content": "def add(a, b): ..."}
+    turn1 = {
+        "model": "jev-auto",
+        "system": [{"type": "text", "text": "You are Claude Code."}],
+        "max_tokens": 100,
+        "litellm_session_id": "cc-session",
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "Read calc.py"}]},
+            {"role": "system", "content": "# Environment\nturn 1 counter"},
+        ],
+    }
+    turn2 = {
+        **turn1,
+        "messages": [
+            turn1["messages"][0],
+            {"role": "system", "content": "# Environment\nturn 2 counter"},
+            {"role": "assistant", "content": [tool_use]},
+            {"role": "user", "content": [tool_result]},
+            {"role": "system", "content": "<total_tokens>99</total_tokens>"},
+        ],
+    }
+    d1, t1 = await router.decide(turn1, "aanthropic_messages", now=1.0)
+    await router.observe(d1, t1, cached_tokens=0, response_fingerprint=None, start=1.0)
+    d2, t2 = await router.decide(turn2, "aanthropic_messages", now=2.0)
+    assert t1.system_text == t2.system_text == "You are Claude Code."
+    assert t1.stable_prefix_tokens == t2.stable_prefix_tokens
+    assert d2.conversation_id == d1.conversation_id
+    assert t2.is_tool_result and d2.reason == "tool_result" and d2.tier == d1.tier
