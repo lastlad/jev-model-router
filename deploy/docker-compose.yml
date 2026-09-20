@@ -3,9 +3,13 @@ services:
     build: { context: .., dockerfile: deploy/Dockerfile }
     ports: ["4000:4000"]
     env_file: .env
+    environment:
+      JEV_ROUTER_LOG_LEVEL: INFO                       # print routing decisions to container logs
+      JEV_ROUTER_LOG_FILE: /app/logs/decisions.jsonl     # ...and append them as JSONL for smoke/conversations.py
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./router.yaml:/app/deploy/router.yaml:ro
+      - ./logs:/app/logs
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     depends_on: [redis]
   redis:

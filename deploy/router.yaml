@@ -1,7 +1,7 @@
 alias: jev-auto
 shadow: false
 objective: { lambda_cost: 1.0, lambda_quality: 3.0 }
-jev: { model: jev-latest, timeout_ms: 1500, min_confidence: 0.55, complaint_threshold: 0.6 }
+jev: { model: jev-latest, timeout_ms: 1500, min_confidence: 0.55, complaint_threshold: 0.85 }
 cache_ttl_seconds: 300
 state:
   budget_tokens: 8000
@@ -16,18 +16,17 @@ state:
   system_prompt_chars: 600
   routing_history_entries: 5
   filter: null
-switch_cost: { base: 0.002, continuity: 0.02, thinking_loss: 0.005, cross_provider: 0.01 }
+switch_cost: { base: 0.001, continuity: 0.003, thinking_loss: 0.002, cross_provider: 0.01 }
 tier_penalty: [0, 0.05, 0.20, 0.60]
 expected_output_tokens: [200, 800, 3000]
 effort_output_multiplier: { low: 0.7, medium: 1.0, high: 1.5, xhigh: 2.5, max: 4.0 }
 tiers:
-  - { name: haiku,         model: haiku,  effort: null,   level: 0 }
-  - { name: luna,          model: luna,   effort: low,    level: 0 }
-  - { name: sonnet-low,    model: sonnet, effort: low,    level: 1 }
-  - { name: sonnet-medium, model: sonnet, effort: medium, level: 1 }
-  - { name: terra,         model: terra,  effort: medium, level: 2 }
-  - { name: sonnet-high,   model: sonnet, effort: high,   level: 2 }
-  - { name: sol,           model: sol,    effort: high,   level: 2 }
-  - { name: opus-medium,   model: opus,   effort: medium, level: 3 }
-  - { name: opus-xhigh,    model: opus,   effort: xhigh,  level: 3 }
-default: sonnet-medium
+  - { name: luna-low,      model: luna,  effort: low,    level: 0 }
+  - { name: luna-medium,   model: luna,  effort: medium, level: 1 }
+  - { name: terra-low,     model: terra, effort: low,    level: 1 }
+  - { name: terra-medium,  model: terra, effort: medium, level: 1 }
+  - { name: terra-high,    model: terra, effort: high,   level: 2 }
+  - { name: sol-medium,    model: sol,   effort: medium, level: 2 }
+  - { name: sol-high,      model: sol,   effort: high,   level: 3 }
+  - { name: sol-xhigh,     model: sol,   effort: xhigh,  level: 3 }
+default: terra-medium

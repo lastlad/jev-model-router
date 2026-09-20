@@ -1,5 +1,6 @@
 from conftest import entry, judgment
 
+from jev_router.core.config import Tier
 from jev_router.core.request import Turn
 from jev_router.core.scorer import choose
 
@@ -72,3 +73,12 @@ def test_complaint_at_top_tier_stays_at_top(cfg, ledger):
     e.model, e.effort = cfg.tiers[-1].model, cfg.tiers[-1].effort
     d = choose(turn(), judgment(level=2, quality_complaint=0.95), e, cfg, ledger, now=1010.0)
     assert d.tier == top and d.reason == "quality_complaint"
+
+
+def test_effort_switch_on_openai_predicts_cache_miss(cfg, ledger):
+    e = entry("sol")
+    e.model, e.effort, e.provider = "sol", "high", "openai"
+    sol_medium = Tier(name="sol-medium", model="sol", effort="medium", level=2, provider="openai")
+    sol_high = cfg.tier("sol")
+    assert ledger.predict_cached(e, sol_high, now=1010.0) == 20000
+    assert ledger.predict_cached(e, sol_medium, now=1010.0) == 0

@@ -30,6 +30,7 @@ def main(router_yaml: str = "deploy/router.yaml") -> None:
                 {"role": "user", "content": "Reply with one word: ready."},
             ],
             "max_tokens": 20,
+            "cache": {"no-cache": True},  # bypass LiteLLM's response cache so the 2nd call reaches the provider
         }
         if tier.get("effort"):
             body["reasoning_effort"] = tier["effort"]
