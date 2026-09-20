@@ -8,7 +8,7 @@ from typing import Any
 import litellm
 from litellm.integrations.custom_logger import CustomLogger
 
-from .core.config import RouterConfig, Tier, load_config
+from .core.config import RouterConfig, Tier, load_configs
 from .core.judge import JevJudge
 from .core.ledger import Ledger
 from .core.request import fingerprint_assistant
@@ -114,36 +114,48 @@ def apply_effort(data: dict[str, Any], tier: Tier, call_type: str) -> None:
 
 
 class JevRouterPlugin(CustomLogger):
+    """One plugin instance serves every router: requests are dispatched on `data["model"]` to the
+    router whose `alias` matches. JEV_ROUTER_CONFIG is a router.yaml or a directory of them."""
+
     def __init__(self, config_path: str | None = None) -> None:
         super().__init__()
-        self.cfg = load_config(config_path or os.environ.get("JEV_ROUTER_CONFIG", "deploy/router.yaml"))
-        self.router: Router | None = None
+        path = config_path or os.environ.get("JEV_ROUTER_CONFIG", "deploy/routers")
+        self.cfgs: dict[str, RouterConfig] = {c.alias: c for c in load_configs(path)}
+        self.routers: dict[str, Router] = {}
+        self.kv: DualCacheKV | None = None
 
-    def _ensure(self, cache: Any) -> Router:
-        if self.router is None:
-            resolve_tiers(self.cfg)
-            judge = JevJudge(model=self.cfg.jev.model, timeout_s=self.cfg.jev.timeout_ms / 1000)
-            self.router = Router(self.cfg, judge, Ledger(DualCacheKV(cache), self.cfg.cache_ttl_seconds))
-        return self.router
+    def _ensure(self, alias: str, cache: Any) -> Router:
+        if self.kv is None:
+            self.kv = DualCacheKV(cache)
+        router = self.routers.get(alias)
+        if router is None:
+            cfg = self.cfgs[alias]
+            resolve_tiers(cfg)
+            judge = JevJudge(model=cfg.jev.model, timeout_s=cfg.jev.timeout_ms / 1000)
+            router = Router(cfg, judge, Ledger(self.kv, cfg.cache_ttl_seconds, namespace=alias))
+            self.routers[alias] = router
+        return router
 
     async def async_pre_call_hook(self, user_api_key_dict: Any, cache: Any, data: dict, call_type: str) -> dict:  # type: ignore[override]
-        if data.get("model") != self.cfg.alias:
+        cfg = self.cfgs.get(str(data.get("model")))
+        if cfg is None:
             return data
-        router = self._ensure(cache)
+        router = self._ensure(cfg.alias, cache)
         start = time.time()
         try:
             decision, turn = await router.decide(data, call_type, start)
         except Exception:
             log.exception("routing failed; using default tier")
             decision, turn = None, None
-        tier = self.cfg.tier(decision.tier if decision else self.cfg.default)
-        if not self.cfg.shadow:
+        tier = cfg.tier(decision.tier if decision else cfg.default)
+        if not cfg.shadow:
             data["model"] = tier.model
             apply_effort(data, tier, call_type)
         info = {
+            "alias": cfg.alias,
             "start": start,
             "call_type": call_type,
-            "shadow": self.cfg.shadow,
+            "shadow": cfg.shadow,
             "stable_prefix_tokens": turn.stable_prefix_tokens if turn else 0,
             "decision": decision.to_dict() if decision else {"tier": tier.name, "reason": "error"},
         }
@@ -154,8 +166,8 @@ class JevRouterPlugin(CustomLogger):
         return data
 
     async def _pending(self, call_id: str | None, *metadata: dict[str, Any] | None) -> dict[str, Any] | None:
-        if call_id and self.router is not None:
-            info = await self.router.ledger.kv.get(f"jev_router:pending:{call_id}")
+        if call_id and self.kv is not None:
+            info = await self.kv.get(f"jev_router:pending:{call_id}")
             if info:
                 return info
         for md in metadata:
@@ -163,10 +175,14 @@ class JevRouterPlugin(CustomLogger):
                 return info
         return None
 
+    def _router_for(self, info: dict[str, Any]) -> Router | None:
+        return self.routers.get(str(info.get("alias")))
+
     async def async_log_success_event(self, kwargs: dict, response_obj: Any, start_time: Any, end_time: Any) -> None:
         lp = kwargs.get("litellm_params") or {}
         info = await self._pending(kwargs.get("litellm_call_id"), lp.get("metadata"), lp.get("litellm_metadata"))
-        if not info or info.get("shadow") or self.router is None:
+        router = self._router_for(info) if info else None
+        if not info or info.get("shadow") or router is None:
             return
         from .core.request import Turn
         from .core.scorer import Decision
@@ -175,10 +191,11 @@ class JevRouterPlugin(CustomLogger):
         decision = Decision(d["tier"], d["reason"], d["conversation_id"])
         turn = Turn(messages=[], stable_prefix_tokens=info.get("stable_prefix_tokens", 0))
         prompt, cached = usage_of(response_obj)
-        await self.router.observe(decision, turn, cached, response_fingerprint(response_obj), info["start"])
+        await router.observe(decision, turn, cached, response_fingerprint(response_obj), info["start"])
         log_event(
             "observed",
             {
+                "alias": info["alias"],
                 "conversation_id": d["conversation_id"],
                 "tier": d["tier"],
                 "model": kwargs.get("model"),
@@ -198,8 +215,9 @@ class JevRouterPlugin(CustomLogger):
         info = await self._pending(
             request_data.get("litellm_call_id"), request_data.get("metadata"), request_data.get("litellm_metadata")
         )
-        if info and self.router is not None and not info.get("shadow"):
-            await self.router.forget_cache(info["decision"]["conversation_id"])
+        router = self._router_for(info) if info else None
+        if info and router is not None and not info.get("shadow"):
+            await router.forget_cache(info["decision"]["conversation_id"])
 
 
 proxy_handler_instance = JevRouterPlugin()

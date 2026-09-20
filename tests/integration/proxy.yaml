@@ -6,6 +6,7 @@ model_list:
   - { model_name: terra,  litellm_params: { model: openai/gpt-5.6-terra,       api_key: fake, mock_response: "from terra" } }
   - { model_name: sol,    litellm_params: { model: openai/gpt-5.6-sol,         api_key: fake, mock_response: "from sol" } }
   - { model_name: jev-auto, litellm_params: { model: anthropic/claude-sonnet-5, api_key: fake, mock_response: "from jev-auto default" } }
+  - { model_name: jev-auto-gpt, litellm_params: { model: openai/gpt-5.6-terra, api_key: fake, mock_response: "from jev-auto-gpt default" } }
 litellm_settings:
   callbacks: jev_router.litellm_plugin.proxy_handler_instance
   drop_params: true

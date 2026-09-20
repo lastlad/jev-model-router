@@ -5,10 +5,11 @@ services:
     env_file: .env
     environment:
       JEV_ROUTER_LOG_LEVEL: INFO                       # print routing decisions to container logs
-      JEV_ROUTER_LOG_FILE: /app/logs/decisions.jsonl     # ...and append them as JSONL for smoke/conversations.py
+      JEV_ROUTER_LOG_FILE: /app/logs/decisions.jsonl     # ...and append them as JSONL for `jev-router eval`
+      JEV_ROUTER_CONFIG: /app/deploy/routers               # every *.yaml here is a router
     volumes:
       - ./config.yaml:/app/config.yaml:ro
-      - ./${ROUTER_CONFIG:-router.yaml}:/app/deploy/router.yaml:ro   # ROUTER_CONFIG=router.claude-code.yaml for Claude Code
+      - ./routers:/app/deploy/routers:ro
       - ./logs:/app/logs
     command: ["--config", "/app/config.yaml", "--port", "4000"]
     depends_on: [redis]

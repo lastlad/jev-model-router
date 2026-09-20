@@ -1,0 +1,34 @@
+# Router `jev-auto-claude`: the Claude ladder on API-key deployments (ANTHROPIC_API_KEY in .env),
+# for applications rather than Claude Code. Every knob is explained in gpt.yaml.
+
+alias: jev-auto-claude
+shadow: false
+objective: { lambda_cost: 1.0, lambda_quality: 3.0 }
+jev: { model: jev-latest, timeout_ms: 1500, min_confidence: 0.55, complaint_threshold: 0.85 }
+cache_ttl_seconds: 300
+state:
+  budget_tokens: 8000
+  current_message_chars: 6000
+  recent_messages: 6
+  recent_user_chars: 1500
+  recent_assistant_chars: 800
+  tool_result_chars: 300
+  older_stubs: 20
+  older_stub_chars: 120
+  first_message_stub_chars: 400
+  system_prompt_chars: 600
+  routing_history_entries: 5
+  filter: null
+switch_cost: { base: 0.001, continuity: 0.003, thinking_loss: 0.002, cross_provider: 0.01 }
+tier_penalty: [0, 0.05, 0.20, 0.60]
+expected_output_tokens: [200, 800, 3000]
+effort_output_multiplier: { low: 0.7, medium: 1.0, high: 1.5, xhigh: 2.5, max: 4.0 }
+tiers:
+  - { name: haiku,         model: haiku,   effort: null,   level: 0 }
+  - { name: sonnet-low,    model: sonnet, effort: low,    level: 1 }
+  - { name: sonnet-medium, model: sonnet, effort: medium, level: 1 }
+  - { name: sonnet-high,   model: sonnet, effort: high,   level: 2 }
+  - { name: opus-medium,   model: opus,     effort: medium, level: 2 }
+  - { name: opus-high,     model: opus,     effort: high,   level: 3 }
+  - { name: opus-xhigh,    model: opus,     effort: xhigh,  level: 3 }
+default: sonnet-medium

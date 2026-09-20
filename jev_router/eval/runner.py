@@ -129,10 +129,13 @@ def scripted_tool_messages(turn: Turn, call_id: str) -> list[dict[str, Any]]:
 
 
 class LiveBackend:
-    def __init__(self, base_url: str, api_key: str, decisions: Path, max_tokens: int = 1200) -> None:
+    def __init__(
+        self, base_url: str, api_key: str, decisions: Path, max_tokens: int = 1200, model: str = "jev-auto"
+    ) -> None:
         self.client = httpx.AsyncClient(base_url=base_url, headers={"Authorization": f"Bearer {api_key}"}, timeout=300)
         self.decisions = decisions
         self.max_tokens = max_tokens
+        self.model = model  # the router's alias
         self.offset = self._size()
         self.target = base_url
         self.cache_source = "observed"
@@ -180,7 +183,7 @@ class LiveBackend:
         rec: TurnRecord,
         tier_levels: dict[str, int],
     ) -> None:
-        body: dict[str, Any] = {"model": "jev-auto", "messages": messages, "max_tokens": self.max_tokens}
+        body: dict[str, Any] = {"model": self.model, "messages": messages, "max_tokens": self.max_tokens}
         if tools:
             body["tools"] = tools
         t0 = time.time()

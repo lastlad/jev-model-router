@@ -1,11 +1,11 @@
-# Router configuration for Claude Code on a claude.ai subscription: Claude tiers only.
-# Start the proxy with  ROUTER_CONFIG=router.claude-code.yaml make up  and source claude-code.env.
-# Every knob is explained in router.yaml; only what differs is commented here.
+# Router `jev-auto-claude-code`: Claude Code on a claude.ai subscription, Claude tiers only, on the
+# cc-* deployments that forward the client's OAuth login. Source deploy/claude-code.env, then `claude`.
+# Every knob is explained in gpt.yaml; only what differs is commented here.
 #
 # Costs are LiteLLM's list prices. On a subscription nothing is billed per token, but plan limits
 # are weighted by model, so the cost term stands in for how much of the usage limit a turn burns.
 
-alias: jev-auto
+alias: jev-auto-claude-code
 shadow: false
 objective: { lambda_cost: 1.0, lambda_quality: 3.0 }
 jev: { model: jev-latest, timeout_ms: 1500, min_confidence: 0.55, complaint_threshold: 0.85 }
@@ -23,7 +23,7 @@ state:
   system_prompt_chars: 600
   routing_history_entries: 5
   filter: null
-# thinking_loss is higher than in router.yaml: after the first model switch in a session, Anthropic
+# thinking_loss is higher than in gpt.yaml: after the first model switch in a session, Anthropic
 # rejects the earlier model's thinking signatures and Claude Code strips thinking blocks from every
 # later request, so a switch costs a retried request plus preserved thinking for the rest of the
 # session. Effort changes on the same model keep the thinking.
@@ -32,11 +32,11 @@ tier_penalty: [0, 0.05, 0.20, 0.60]
 expected_output_tokens: [200, 800, 3000]
 effort_output_multiplier: { low: 0.7, medium: 1.0, high: 1.5, xhigh: 2.5, max: 4.0 }
 tiers:
-  - { name: haiku,         model: haiku,  effort: null,   level: 0 }
-  - { name: sonnet-low,    model: sonnet, effort: low,    level: 1 }
-  - { name: sonnet-medium, model: sonnet, effort: medium, level: 1 }
-  - { name: sonnet-high,   model: sonnet, effort: high,   level: 2 }
-  - { name: opus-medium,   model: opus,   effort: medium, level: 2 }
-  - { name: opus-high,     model: opus,   effort: high,   level: 3 }
-  - { name: opus-xhigh,    model: opus,   effort: xhigh,  level: 3 }
+  - { name: haiku,         model: cc-haiku,  effort: null,   level: 0 }
+  - { name: sonnet-low,    model: cc-sonnet, effort: low,    level: 1 }
+  - { name: sonnet-medium, model: cc-sonnet, effort: medium, level: 1 }
+  - { name: sonnet-high,   model: cc-sonnet, effort: high,   level: 2 }
+  - { name: opus-medium,   model: cc-opus,   effort: medium, level: 2 }
+  - { name: opus-high,     model: cc-opus,   effort: high,   level: 3 }
+  - { name: opus-xhigh,    model: cc-opus,   effort: xhigh,  level: 3 }
 default: sonnet-medium

@@ -4,7 +4,7 @@ Two things get tested in this repo, on purpose separately:
 
 | | Regression (`pytest`) | Evaluation (`jev-router eval`) |
 |---|---|---|
-| Question | Did a code change break the router? | How well does *this router.yaml* route? |
+| Question | Did a code change break the router? | How well does *this router file* route? |
 | Needs | nothing (fake Jev, mock models) | a Typesafe key; provider keys for live mode |
 | Lives in | `tests/` (unit) + `tests/integration/` (real LiteLLM proxy, mock deployments) | `jev_router/eval/`, datasets in `evals/datasets/` |
 | Output | pass/fail | JSON report + Markdown summary, exit code from thresholds |
@@ -25,13 +25,13 @@ make up
 LITELLM_MASTER_KEY=... jev-router eval run evals/datasets/routing-golden.yaml --mode live
 
 # Options
-  --config deploy/router.yaml       router config under evaluation
+  --config deploy/routers/gpt.yaml  router file under evaluation (its alias is the model in live mode)
   --only support --only sql          substring filter on conversation names
   --record evals/datasets/x.yaml     live only: write a copy of the dataset with replies pinned
   --out-dir evals/reports            where <dataset>-<mode>-<run_id>.{json,md} land
 ```
 
-`eval preflight` checks, against a live proxy, that every tier in `router.yaml` accepts its effort
+`eval preflight` checks, against a live proxy, that every tier in a router file accepts its effort
 value and gets a prompt-cache hit on a repeated request. Run it after changing tiers or LiteLLM.
 
 ### Live vs simulate
@@ -44,7 +44,7 @@ It is free and takes seconds, and it reproduces the routing decision exactly, bu
   history, so record a live run first (`--record`) when reply content matters;
 - cache hit ratios and cost are the router's own model of the provider, not measurements.
 
-Use live runs to validate the cache model and cost; use simulate to iterate on `router.yaml`.
+Use live runs to validate the cache model and cost; use simulate to iterate on a router file.
 
 ## Datasets
 

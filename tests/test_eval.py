@@ -166,7 +166,7 @@ async def test_simulate_backend_end_to_end(dataset_file):
     backend = SimulateBackend(cfg, RecordedJudge(j1, j2, j3), "router.yaml")
     seen = []
     result = await run_dataset(
-        ds, backend, "tests/integration/router.yaml", "simulate", on_turn=lambda r, t: seen.append(t)
+        ds, backend, "tests/integration/routers/mixed.yaml", "simulate", on_turn=lambda r, t: seen.append(t)
     )
     [run] = result.conversations
     reasons = [t.reason for t in run.turns]

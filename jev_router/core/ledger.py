@@ -54,23 +54,26 @@ class LedgerEntry:
 
 
 class Ledger:
-    def __init__(self, kv: KV, ttl_seconds: int) -> None:
+    def __init__(self, kv: KV, ttl_seconds: int, namespace: str = "") -> None:
         self.kv = kv
         self.ttl = ttl_seconds
         self.entry_ttl = ttl_seconds * 12  # keep routing history well past the cache TTL
+        # Routers sharing one cache keep separate ledgers: a conversation's incumbent under one
+        # ladder says nothing about another.
+        self.prefix = f"jev_router:{namespace}:" if namespace else "jev_router:"
 
     async def get(self, conversation_id: str) -> LedgerEntry | None:
-        raw = await self.kv.get(f"jev_router:conv:{conversation_id}")
+        raw = await self.kv.get(f"{self.prefix}conv:{conversation_id}")
         return LedgerEntry.from_dict(raw) if raw else None
 
     async def put(self, conversation_id: str, entry: LedgerEntry) -> None:
-        await self.kv.set(f"jev_router:conv:{conversation_id}", asdict(entry), self.entry_ttl)
+        await self.kv.set(f"{self.prefix}conv:{conversation_id}", asdict(entry), self.entry_ttl)
 
     async def link_response(self, fingerprint: str, conversation_id: str) -> None:
-        await self.kv.set(f"jev_router:resp:{fingerprint}", conversation_id, self.entry_ttl)
+        await self.kv.set(f"{self.prefix}resp:{fingerprint}", conversation_id, self.entry_ttl)
 
     async def lookup_response(self, fingerprint: str) -> str | None:
-        return await self.kv.get(f"jev_router:resp:{fingerprint}")
+        return await self.kv.get(f"{self.prefix}resp:{fingerprint}")
 
     def predict_cached(self, entry: LedgerEntry | None, tier: Tier, now: float) -> int:
         if entry is None or now - entry.last_start > self.ttl or tier.model != entry.model:
