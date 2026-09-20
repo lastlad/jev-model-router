@@ -3,8 +3,9 @@
 **Status: completed.** Proposed 2026-09-18, implemented and evaluated by
 2026-09-20. This is the design record: why the router looks the way it does,
 and what the first evaluation changed. The README describes how to run it;
-`deploy/router.yaml` documents every tunable. Later changes are not folded
-back into this document.
+`deploy/routers/gpt.yaml` documents every tunable. Later changes (several
+routers per proxy, Claude Code on a subscription) are not folded back into
+this document.
 
 ## 1. What was built
 

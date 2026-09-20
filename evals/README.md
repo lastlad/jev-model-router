@@ -34,6 +34,22 @@ LITELLM_MASTER_KEY=... jev-router eval run evals/datasets/routing-golden.yaml --
 `eval preflight` checks, against a live proxy, that every tier in a router file accepts its effort
 value and gets a prompt-cache hit on a repeated request. Run it after changing tiers or LiteLLM.
 
+### One dataset, several routers
+
+Labels are levels on Jev's 0–3 scale, not tier names, so the same dataset scores any router file:
+
+```sh
+make eval                                          # deploy/routers/gpt.yaml (default)
+make eval ROUTER=deploy/routers/claude.yaml        # the Claude ladder
+make eval-live ROUTER=deploy/routers/claude-code.yaml   # live: posts to that file's alias, jev-auto-claude-code
+```
+
+Reports are named `<dataset>-<mode>-<run_id>` and record the router's alias and config, so runs for
+different routers sit side by side in `evals/reports/`. Cost and cache figures are per ladder and
+not comparable across providers; level accuracy, moves, switches, fast path and complaint counts are.
+In live mode the router must be loaded by the running proxy (any file in `deploy/routers/`); a
+router file the proxy does not serve can still be evaluated in simulate mode.
+
 ### Live vs simulate
 
 Simulate drives the router core in-process with the real Jev judge and a simulated provider cache

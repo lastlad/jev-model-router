@@ -2,7 +2,7 @@
 
 Two backends:
 
-* ``LiveBackend`` sends each turn to a running LiteLLM proxy (``deploy/``) as ``jev-auto`` and
+* ``LiveBackend`` sends each turn to a running LiteLLM proxy (``deploy/``) as the router's alias and
   correlates it with the plugin's ``decision``/``observed`` events in ``JEV_ROUTER_LOG_FILE``.
   Real providers, real replies, real cache accounting, real cost.
 * ``SimulateBackend`` drives the router core in-process with the real Jev judge, a simulated

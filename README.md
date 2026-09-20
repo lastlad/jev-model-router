@@ -20,9 +20,11 @@ app ──▶ LiteLLM proxy ──▶ jev_router plugin ──▶ Jev: "what doe
 
 ## Quickstart
 
-You need Python 3.11+, [uv](https://docs.astral.sh/uv/), Docker, and keys for
-Jev (`TYPESAFE_API_KEY`) and at least one provider (`OPENAI_API_KEY` by
-default; the ladder is OpenAI-only out of the box).
+You need Python 3.11+, [uv](https://docs.astral.sh/uv/), Docker, a Jev key
+(`TYPESAFE_API_KEY`), and a provider key for the router you'll call: the
+quickstart uses `jev-auto-gpt` (`OPENAI_API_KEY`); `jev-auto-claude` needs
+`ANTHROPIC_API_KEY`; `jev-auto-claude-code` uses your claude.ai login. One
+proxy serves all three — see the table in [deploy/README.md](deploy/README.md).
 
 ```sh
 make setup                            # .venv with the package and dev tools

@@ -1,7 +1,8 @@
 name: routing-golden
 description: Twelve 5-10 turn conversations spanning trivial support, routine coding, deep debugging, an agent tool
   loop, complaint handling, escalation and de-escalation, and spiky difficulty. Levels follow the four-point Jev
-  scale (0 trivial, 1 routine, 2 demanding, 3 frontier); ranges allow for reasonable disagreement.
+  scale (0 trivial, 1 routine, 2 demanding, 3 frontier); ranges allow for reasonable disagreement. Labels are
+  ladder-agnostic, so the same dataset evaluates any router file in deploy/routers/.
 thresholds:
   level_accuracy: 0.6
   under_provision_rate: 0.1
@@ -445,7 +446,7 @@ conversations:
 - name: code-mid-steady
   system:
     context: py_module
-  expect: level 1 throughout; expect a single tier (terra) and rising cache hits as history grows
+  expect: level 1 throughout; expect a single mid tier and rising cache hits as history grows
   turns:
   - user: Add a `remaining(key)` method to LRUBuckets that returns the current token count for a key without consuming
       any, and without creating a bucket if the key is unknown.
@@ -636,7 +637,7 @@ conversations:
     expected_level: [0, 1]
 - name: trivial-formatting-steady
   system: You are a helpful assistant.
-  expect: level 0 throughout; expect luna and zero switches (system prompt is short, so caching only kicks in once
+  expect: level 0 throughout; expect the cheapest tier and zero switches (system prompt is short, so caching only kicks in once
     the history itself exceeds 1024 tokens)
   turns:
   - user: 'Convert this to JSON: name Ada, age 36, city London.'
