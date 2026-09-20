@@ -20,6 +20,9 @@ fmt:             ## apply ruff fixes and formatting
 up:              ## build and start the proxy + redis (reads deploy/.env)
 	cd deploy && docker compose up -d --build
 
+up-claude-code:  ## same, with the Claude-tiers ladder for Claude Code on a claude.ai subscription
+	cd deploy && ROUTER_CONFIG=router.claude-code.yaml docker compose up -d --build
+
 down:            ## stop the proxy
 	cd deploy && docker compose down
 
@@ -35,4 +38,4 @@ eval:            ## evaluate deploy/router.yaml with real Jev, no model calls (f
 eval-live:       ## evaluate against the running proxy with real providers (costs money)
 	.venv/bin/jev-router eval run $(DATASET) --mode live
 
-.PHONY: help setup test lint fmt up down logs preflight eval eval-live
+.PHONY: help setup test lint fmt up up-claude-code down logs preflight eval eval-live

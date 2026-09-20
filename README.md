@@ -40,8 +40,11 @@ make logs                             # the routing decision for that request, a
 
 Send the same `x-litellm-session-id` on each turn of a conversation so the
 router can track its incumbent model and cache state; without it, turns are
-chained by the previous reply's fingerprint. `deploy/README.md` covers
-Claude Code, shadow mode, and replaying saved requests.
+chained by the previous reply's fingerprint.
+
+To use the router from Claude Code — on your claude.ai subscription with Claude
+tiers, or on the GPT-5.6 ladder — see [deploy/README.md](deploy/README.md#claude-code);
+it also covers shadow mode and replaying saved requests.
 
 ## Tuning the router
 

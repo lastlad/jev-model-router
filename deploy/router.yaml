@@ -61,9 +61,6 @@ tiers:
   - { name: sol-medium,    model: sol,   effort: medium, level: 2 }
   - { name: sol-high,      model: sol,   effort: high,   level: 3 }
   - { name: sol-xhigh,     model: sol,   effort: xhigh,  level: 3 }
-  # With Anthropic access, add Claude deployments to deploy/config.yaml and tiers such as:
-  # - { name: haiku,         model: haiku,  effort: null,   level: 0 }
-  # - { name: sonnet-low,    model: sonnet, effort: low,    level: 1 }
-  # - { name: sonnet-high,   model: sonnet, effort: high,   level: 2 }
-  # - { name: opus-xhigh,    model: opus,   effort: xhigh,  level: 3 }
+  # Claude tiers (haiku / sonnet / opus deployments in config.yaml) can be mixed in here; see
+  # router.claude-code.yaml for a Claude-only ladder.
 default: terra-medium          # used when Jev is unavailable on a fresh conversation, or no tier is eligible

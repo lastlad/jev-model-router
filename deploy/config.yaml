@@ -9,23 +9,26 @@ model_list:
     litellm_params: { model: openai/gpt-5.6-sol, api_key: os.environ/OPENAI_API_KEY }
   - model_name: jev-auto      # served only in shadow mode or when the plugin fails; keep it a sensible default
     litellm_params: { model: openai/gpt-5.6-terra, api_key: os.environ/OPENAI_API_KEY }
-  # Anthropic deployments, for a mixed-provider ladder (see the commented tiers in router.yaml).
-  # cache_control_injection_points marks the system prompt and the latest message for prompt caching.
-  # - model_name: haiku
-  #   litellm_params: { model: anthropic/claude-haiku-4-5, api_key: os.environ/ANTHROPIC_API_KEY }
-  #   cache_control_injection_points: [{ location: message, role: system }, { location: message, index: -1 }]
-  # - model_name: sonnet
-  #   litellm_params: { model: anthropic/claude-sonnet-5, api_key: os.environ/ANTHROPIC_API_KEY }
-  #   cache_control_injection_points: [{ location: message, role: system }, { location: message, index: -1 }]
-  # - model_name: opus
-  #   litellm_params: { model: anthropic/claude-opus-5, api_key: os.environ/ANTHROPIC_API_KEY }
-  #   cache_control_injection_points: [{ location: message, role: system }, { location: message, index: -1 }]
+  # Claude deployments. No api_key: the proxy forwards the client's Anthropic OAuth token
+  # (Claude Code signed in with a claude.ai subscription, see claude-code.env), so usage counts
+  # against that subscription. With an Anthropic Console key instead, add
+  # `api_key: os.environ/ANTHROPIC_API_KEY` to each. No cache_control_injection_points: Claude
+  # Code places its own markers, and Anthropic allows at most four per request.
+  - model_name: haiku
+    litellm_params: { model: anthropic/claude-haiku-4-5 }
+  - model_name: sonnet
+    litellm_params: { model: anthropic/claude-sonnet-5 }
+  - model_name: opus
+    litellm_params: { model: anthropic/claude-opus-5 }
 
 router_settings:
   fallbacks: [{ sol: [terra] }, { terra: [luna] }]   # provider errors fall through to the next model down
 
 litellm_settings:
   callbacks: jev_router.litellm_plugin.proxy_handler_instance
+  # Forward the client's x-* and anthropic-beta headers (which carry the OAuth capability and the
+  # Authorization bearer for a claude.ai login) to Anthropic, for these deployments only.
+  model_group_settings: { forward_client_headers_to_llm_api: [haiku, sonnet, opus] }
   cache: true                                        # response cache and the router's ledger both live in Redis
   cache_params: { type: redis, host: redis, port: 6379 }
   drop_params: true                                  # drop parameters a provider does not support (e.g. effort)
