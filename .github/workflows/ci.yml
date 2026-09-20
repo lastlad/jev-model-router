@@ -9,7 +9,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with: { python-version: "3.11" }
-      - run: uv venv && uv pip install -e ".[dev]"
+      - run: uv venv --clear && uv pip install -e ".[dev]"
       - run: .venv/bin/ruff check jev_router tests && .venv/bin/ruff format --check jev_router tests
       - run: .venv/bin/pyright jev_router
       - run: .venv/bin/pytest -q   # integration tests boot a LiteLLM proxy with mock deployments; no keys

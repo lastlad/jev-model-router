@@ -6,7 +6,7 @@ help:            ## show targets
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*##' '{printf "  %-14s %s\n", $$1, $$2}'
 
 setup:           ## create .venv and install the package with dev tools
-	uv venv && uv pip install -e ".[dev]"
+	uv venv --clear && uv pip install -e ".[dev]"
 
 test:            ## unit + integration tests (boots a mock proxy; no keys needed)
 	.venv/bin/pytest -q
