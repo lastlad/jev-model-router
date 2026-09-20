@@ -1,0 +1,699 @@
+name: routing-golden
+description: Twelve 5-10 turn conversations spanning trivial support, routine coding, deep debugging, an agent tool
+  loop, complaint handling, escalation and de-escalation, and spiky difficulty. Levels follow the four-point Jev
+  scale (0 trivial, 1 routine, 2 demanding, 3 frontier); ranges allow for reasonable disagreement.
+thresholds:
+  level_accuracy: 0.6
+  under_provision_rate: 0.1
+  false_complaint_rate: 0.34
+  fastpath_accuracy: 1.0
+  errors: 0
+contexts:
+  py_module: |-
+    You are a senior engineer helping maintain the `ratelimit` package. Answer with concrete code when
+    asked for changes. The module under discussion is reproduced here:
+
+    ```python
+    # ratelimit/bucket.py
+    import threading
+    import time
+    from collections import OrderedDict
+    from dataclasses import dataclass, field
+
+
+    @dataclass
+    class TokenBucket:
+        """Classic token bucket. `rate` tokens are added per second up to `capacity`."""
+
+        rate: float
+        capacity: float
+        tokens: float = field(default=None)  # type: ignore[assignment]
+        updated_at: float = field(default_factory=time.monotonic)
+
+        def __post_init__(self) -> None:
+            if self.tokens is None:
+                self.tokens = self.capacity
+
+        def _refill(self, now: float) -> None:
+            elapsed = now - self.updated_at
+            self.tokens = min(self.capacity, self.tokens + elapsed * self.rate)
+            self.updated_at = now
+
+        def try_acquire(self, n: float = 1.0, now: float | None = None) -> bool:
+            now = time.monotonic() if now is None else now
+            self._refill(now)
+            if self.tokens >= n:
+                self.tokens -= n
+                return True
+            return False
+
+        def time_until(self, n: float = 1.0, now: float | None = None) -> float:
+            now = time.monotonic() if now is None else now
+            self._refill(now)
+            if self.tokens >= n:
+                return 0.0
+            return (n - self.tokens) / self.rate
+
+
+    class LRUBuckets:
+        """Per-key token buckets with LRU eviction. Thread-safe for the public methods."""
+
+        def __init__(self, rate: float, capacity: float, max_keys: int = 10_000) -> None:
+            self.rate = rate
+            self.capacity = capacity
+            self.max_keys = max_keys
+            self._buckets: OrderedDict[str, TokenBucket] = OrderedDict()
+            self._lock = threading.Lock()
+
+        def _get(self, key: str) -> TokenBucket:
+            bucket = self._buckets.get(key)
+            if bucket is None:
+                bucket = TokenBucket(self.rate, self.capacity)
+                self._buckets[key] = bucket
+                if len(self._buckets) > self.max_keys:
+                    self._buckets.popitem(last=False)
+            else:
+                self._buckets.move_to_end(key)
+            return bucket
+
+        def try_acquire(self, key: str, n: float = 1.0) -> bool:
+            with self._lock:
+                return self._get(key).try_acquire(n)
+
+        def time_until(self, key: str, n: float = 1.0) -> float:
+            bucket = self._get(key)
+            return bucket.time_until(n)
+
+        def stats(self) -> dict[str, float]:
+            with self._lock:
+                return {k: b.tokens for k, b in self._buckets.items()}
+
+
+    class SlidingWindow:
+        """Sliding-window counter: allows `limit` events per `window_s` seconds per key."""
+
+        def __init__(self, limit: int, window_s: float) -> None:
+            self.limit = limit
+            self.window_s = window_s
+            self._events: dict[str, list[float]] = {}
+            self._lock = threading.Lock()
+
+        def allow(self, key: str, now: float | None = None) -> bool:
+            now = time.monotonic() if now is None else now
+            with self._lock:
+                events = self._events.setdefault(key, [])
+                cutoff = now - self.window_s
+                while events and events[0] < cutoff:
+                    events.pop(0)
+                if len(events) < self.limit:
+                    events.append(now)
+                    return True
+                return False
+
+        def reset(self, key: str) -> None:
+            with self._lock:
+                self._events.pop(key, None)
+    ```
+
+    ```python
+    # ratelimit/middleware.py
+    from __future__ import annotations
+
+    from collections.abc import Callable
+
+    from .bucket import LRUBuckets
+
+
+    class RateLimitMiddleware:
+        """ASGI middleware. Keys requests by the X-Client-Id header, falling back to the client IP."""
+
+        def __init__(self, app, rate: float = 10.0, capacity: float = 20.0) -> None:
+            self.app = app
+            self.buckets = LRUBuckets(rate, capacity)
+
+        @staticmethod
+        def _key(scope) -> str:
+            headers = dict(scope.get("headers") or [])
+            cid = headers.get(b"x-client-id")
+            if cid:
+                return cid.decode()
+            client = scope.get("client") or ("unknown", 0)
+            return str(client[0])
+
+        async def __call__(self, scope, receive, send) -> None:
+            if scope["type"] != "http":
+                await self.app(scope, receive, send)
+                return
+            key = self._key(scope)
+            if not self.buckets.try_acquire(key):
+                retry = self.buckets.time_until(key)
+                await send({"type": "http.response.start", "status": 429,
+                            "headers": [(b"retry-after", str(int(retry) + 1).encode())]})
+                await send({"type": "http.response.body", "body": b"rate limited"})
+                return
+            await self.app(scope, receive, send)
+    ```
+
+    Tests live in tests/test_bucket.py and tests/test_middleware.py (pytest, no network). CI runs
+    ruff, pyright strict, and pytest on 3.11 and 3.12.
+  faq: |-
+    You are the support assistant for Lumen, a self-hosted photo library. Answer from the knowledge base
+    below. Be brief and friendly. If the answer is not covered, say so and suggest emailing support@lumen.example.
+
+    # Lumen knowledge base
+
+    ## Plans and pricing
+    - Lumen Core is free and open source (AGPL-3.0). It includes the web app, mobile sync, face grouping,
+      and map view, with no photo or user limits.
+    - Lumen Plus is a paid license key ($4/month or $40/year per server, unlimited users) that unlocks
+      machine-learning search ("beach at sunset"), duplicate detection, and priority email support.
+    - Licenses are per server, not per user. A family sharing one server needs one Plus license.
+    - You can cancel any time from Settings → License. Features keep working until the paid period ends.
+    - Refunds: full refund within 14 days of purchase, no questions asked. Email support with the order id.
+
+    ## Installation
+    - Supported: Docker Compose (recommended), Kubernetes via the community Helm chart, and a bare-metal
+      `.deb` for Ubuntu 22.04+/Debian 12+.
+    - Minimum hardware: 2 vCPU, 4 GB RAM, and SSD storage for the database. ML search needs 8 GB RAM or
+      a GPU with 4 GB VRAM. Raspberry Pi 5 is supported without ML search.
+    - The database is PostgreSQL 15+. SQLite is not supported.
+    - Photos are stored as-is on disk under the `LUMEN_LIBRARY` path. Lumen never modifies originals.
+
+    ## Mobile app
+    - iOS 16+ and Android 10+. Background upload requires "Allow background activity" on Android and
+      Background App Refresh on iOS.
+    - Uploads are deduplicated by content hash, so re-installing the app does not create duplicates.
+    - "Free up space" deletes local copies only after the server confirms the checksum.
+    - Live Photos and RAW+JPEG pairs are kept together.
+
+    ## Sharing
+    - Shared albums can be public links (optionally password-protected, with expiry) or shared with
+      other users on the same server.
+    - External viewers of a public link cannot see faces, locations, or original filenames unless the
+      owner enables "Show metadata".
+    - There is no cross-server sharing yet; it is on the roadmap for 2027.
+
+    ## Backups and migration
+    - Back up two things: the PostgreSQL database and the `LUMEN_LIBRARY` directory. The built-in
+      `lumen backup` command does both into a single tarball.
+    - Migrating from Google Photos: use the Takeout importer in Settings → Import. It reads the
+      Takeout JSON sidecars to restore dates, descriptions, and album membership.
+    - Migrating from Apple Photos: export originals with "Export Unmodified Original" and enable
+      "Export IPTC as XMP", then import the folder.
+
+    ## Troubleshooting
+    - Faces not appearing: face grouping runs as a background job; check Admin → Jobs. It processes
+      roughly 500 photos/minute on a 4-core CPU.
+    - Thumbnails missing after migration: run `lumen jobs regenerate-thumbnails`.
+    - HEIC photos show as broken: install `libheif` on bare-metal installs; the Docker image includes it.
+    - "Storage almost full" warning appears at 90% disk usage on the library volume.
+    - Reverse proxy: Lumen needs `client_max_body_size` (nginx) or the equivalent set to at least 500M
+      for video uploads, and WebSocket forwarding for live updates.
+
+    ## Privacy
+    - No telemetry is sent by default. An opt-in anonymous usage counter can be enabled in Settings.
+    - ML search runs entirely on your server; no photos leave it.
+    - Face data is stored as embeddings in your database and is deleted when the photo is deleted.
+    ## Storage and formats
+    - Supported photo formats: JPEG, PNG, HEIC/HEIF, WebP, AVIF, TIFF, GIF, and RAW from Canon (CR2/CR3),
+      Nikon (NEF), Sony (ARW), Fujifilm (RAF), and DNG. Video: MP4, MOV, MKV, WebM, and 3GP.
+    - Originals are never re-encoded. Thumbnails and web-sized previews are generated as WebP and stored
+      under `LUMEN_LIBRARY/.lumen/derived`; they can be deleted and regenerated at any time.
+    - External libraries: point Lumen at a read-only folder (for example a NAS share) and it will index
+      without moving files. Deleting from Lumen only removes the index entry for external files.
+    - Storage tiers: the Plus license adds an optional S3-compatible cold tier for originals older than a
+      configurable age; previews stay local so browsing remains fast.
+
+    ## Accounts and access
+    - Sign-in methods: local password, OpenID Connect (tested with Authelia, Authentik, Keycloak, and
+      Google), and passkeys. Two-factor via TOTP is available for local accounts.
+    - Roles: admin, member, and guest. Guests can view shared albums only. Members can be limited by
+      a per-user storage quota.
+    - API tokens: create them in Settings → Developer. Tokens inherit the user's role and can be scoped
+      read-only. The REST API is documented at `/api/docs` on your server.
+
+    ## Release cadence
+    - Stable releases ship roughly monthly; the `latest` Docker tag tracks stable and `edge` tracks
+      main. Upgrade by pulling the new image; database migrations run automatically on start.
+    - Downgrading is not supported once a migration has run; restore from a backup instead.
+  schema: |-
+    You are a data analyst's assistant. Write PostgreSQL 16 SQL against this schema. Prefer CTEs over
+    subqueries, alias tables, and explain assumptions briefly.
+
+    ```sql
+    CREATE TABLE customers (
+      customer_id   bigint PRIMARY KEY,
+      email         text NOT NULL UNIQUE,
+      country       char(2) NOT NULL,
+      plan          text NOT NULL CHECK (plan IN ('free','pro','team','enterprise')),
+      created_at    timestamptz NOT NULL,
+      churned_at    timestamptz
+    );
+
+    CREATE TABLE subscriptions (
+      subscription_id bigint PRIMARY KEY,
+      customer_id     bigint NOT NULL REFERENCES customers,
+      plan            text NOT NULL,
+      seats           int NOT NULL DEFAULT 1,
+      mrr_cents       int NOT NULL,
+      started_at      timestamptz NOT NULL,
+      ended_at        timestamptz,            -- NULL while active
+      cancel_reason   text
+    );
+
+    CREATE TABLE invoices (
+      invoice_id      bigint PRIMARY KEY,
+      subscription_id bigint NOT NULL REFERENCES subscriptions,
+      period_start    date NOT NULL,
+      period_end      date NOT NULL,
+      amount_cents    int NOT NULL,
+      status          text NOT NULL CHECK (status IN ('draft','open','paid','void','uncollectible')),
+      paid_at         timestamptz
+    );
+
+    CREATE TABLE events (
+      event_id     bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      customer_id  bigint NOT NULL REFERENCES customers,
+      occurred_at  timestamptz NOT NULL,
+      name         text NOT NULL,             -- 'login', 'export', 'invite_sent', 'report_created', ...
+      properties   jsonb NOT NULL DEFAULT '{}'
+    );
+    CREATE INDEX ON events (customer_id, occurred_at DESC);
+    CREATE INDEX ON events (name, occurred_at DESC);
+
+    CREATE TABLE support_tickets (
+      ticket_id    bigint PRIMARY KEY,
+      customer_id  bigint NOT NULL REFERENCES customers,
+      opened_at    timestamptz NOT NULL,
+      closed_at    timestamptz,
+      priority     text NOT NULL CHECK (priority IN ('low','normal','high','urgent')),
+      csat         smallint CHECK (csat BETWEEN 1 AND 5)
+    );
+    ```
+
+    Conventions: money is stored in integer cents; "active subscription" means `ended_at IS NULL`;
+    the events table holds about 2 billion rows and is partitioned monthly by `occurred_at`;
+    customers is ~3 million rows. Fiscal year starts 1 February. Report dates in UTC.
+
+    Data dictionary and gotchas:
+    - `customers.plan` is the *current* plan and is denormalised from the latest subscription; use
+      `subscriptions` for anything historical.
+    - A customer can have several subscriptions over time (upgrade = old row gets `ended_at`, new row
+      starts the same day). Do not assume one subscription per customer.
+    - `subscriptions.mrr_cents` is the monthly value at the time of the row; annual plans are stored as
+      their monthly equivalent. Seat changes create a new subscription row.
+    - `invoices.status = 'void'` rows must be excluded from revenue; `'uncollectible'` counts as churned
+      revenue from `period_end`.
+    - `events.properties` commonly holds `{"source": "web"|"api"|"mobile", "duration_ms": int}`; for
+      `report_created` it also has `"rows": int`. Properties are not validated, so guard against nulls.
+    - `support_tickets.csat` is only present when the customer answered the survey (about 35% of tickets).
+    - Time zone: all timestamps are stored in UTC. `created_at` for customers before 2023-06-01 was
+      backfilled from a legacy system and has 00:00:00 times.
+    - Row counts: customers ~3M, subscriptions ~4.5M, invoices ~60M, support_tickets ~2M.
+    - There is a materialised view `mv_daily_mrr(day date, mrr_cents bigint)` refreshed nightly that you
+      may use for trend charts, but not for cohort analysis.
+    - Common filters: `country IN ('US','CA')` is "North America"; `plan = 'enterprise'` customers are
+      managed by the sales team and should be excluded from self-serve funnels unless asked.
+    - Reporting conventions: percentages to one decimal place, currency in whole dollars (divide cents
+      by 100.0 and round), and always include the period in the column name, e.g. `mrr_2025_03`.
+    - Query hygiene: never `SELECT *` from `events`; always constrain `occurred_at` so partition pruning
+      applies. Use `EXPLAIN (ANALYZE, BUFFERS)` output when asked to justify performance claims.
+  design_memo: |-
+    You are reviewing an internal engineering design memo for a colleague. Be direct.
+
+    # Design memo: moving Orders from synchronous writes to an outbox + stream
+
+    ## Context
+    The Orders service (Go, Postgres) currently does four things inside one HTTP request when a
+    checkout completes: (1) insert the order row, (2) call Inventory over gRPC to reserve stock,
+    (3) call Payments over HTTP to capture the authorization, and (4) publish an `order.created` event
+    to Kafka. p99 latency for checkout is 2.4 s and rising; ~0.6% of checkouts fail with partial side
+    effects (order row committed but no Kafka event, or stock reserved but the order rolled back).
+    Downstream, Fulfilment and Notifications consume `order.created` and both have ad hoc retry
+    scripts to repair missed events.
+
+    ## Proposal
+    1. Introduce a transactional outbox table in the Orders database. The checkout handler writes the
+       order row and an outbox row in one transaction and returns 202 to the client with the order id.
+    2. A relay process (Debezium in the first iteration; a hand-rolled poller as a fallback) tails the
+       outbox and publishes to Kafka with the order id as the partition key.
+    3. Inventory reservation and payment capture become consumers of `order.created` and emit
+       `inventory.reserved` / `inventory.rejected` and `payment.captured` / `payment.failed`.
+    4. A new Order Saga component consumes those events and drives the order through states
+       `pending → reserved → paid → confirmed`, or into `cancelled` with compensating events
+       (`inventory.release`, `payment.void`).
+    5. The web client polls `GET /orders/{id}` (or subscribes over SSE) until the state is terminal.
+
+    ## Guarantees
+    - At-least-once delivery from outbox to Kafka. Consumers are idempotent on `(order_id, event_type)`.
+    - Ordering per order id is preserved through partition-key choice.
+    - The saga's state transitions are persisted before emitting the next command, so a crashed saga
+      worker resumes from the last persisted state.
+
+    ## Rollout
+    - Phase A: dual-write (existing synchronous path plus outbox), relay publishes to a shadow topic;
+      compare event streams for one week.
+    - Phase B: cut Fulfilment and Notifications over to the relay-published topic.
+    - Phase C: make Inventory and Payments event-driven; remove synchronous calls from the handler.
+    - Phase D: remove dual-write.
+
+    ## Risks called out
+    - Debezium adds operational surface (connector, schema registry). Mitigation: fallback poller.
+    - Client UX changes from synchronous confirmation to "processing" state. Mitigation: SSE endpoint
+      and optimistic UI; most orders reach `confirmed` in < 1 s in load tests.
+    - Saga bugs can strand orders. Mitigation: a nightly reconciler that flags orders in non-terminal
+      states older than 15 minutes.
+
+    ## Open questions
+    - Should the saga live in the Orders service or be its own deployable?
+    - Do we need exactly-once semantics for payment capture, and if so, where is the idempotency key
+      stored?
+    - How do we handle a reservation that succeeds after a payment already failed (out-of-order
+      consumer completion)?
+
+    ## Numbers from the load test
+    - Baseline: 850 rps, p50 410 ms, p99 2.4 s, error rate 0.6%.
+    - Outbox prototype (Phase A shape): 850 rps, p50 38 ms (202 returned after DB commit), p99 120 ms,
+      handler error rate 0.02%; end-to-end time to `confirmed` p50 620 ms, p99 3.1 s.
+
+    ## Appendix A: current handler (simplified)
+    ```go
+    func (h *Handler) Checkout(ctx context.Context, req CheckoutRequest) (*Order, error) {
+        tx, _ := h.db.BeginTx(ctx, nil)
+        order, err := h.orders.Insert(ctx, tx, req)          // (1)
+        if err != nil { tx.Rollback(); return nil, err }
+        if err := h.inventory.Reserve(ctx, order); err != nil { // (2) gRPC, 300 ms p50
+            tx.Rollback(); return nil, err
+        }
+        if err := h.payments.Capture(ctx, order); err != nil {  // (3) HTTP, 900 ms p50
+            h.inventory.Release(ctx, order)                    // best effort
+            tx.Rollback(); return nil, err
+        }
+        if err := tx.Commit(); err != nil { return nil, err }
+        h.kafka.Publish(ctx, "order.created", order)          // (4) fire and forget
+        return order, nil
+    }
+    ```
+
+    ## Appendix B: consumers today
+    | Consumer      | Topic          | Idempotent? | Notes                                   |
+    |---------------|----------------|-------------|-----------------------------------------|
+    | Fulfilment    | order.created  | yes         | keyed on order_id                       |
+    | Notifications | order.created  | no          | duplicate emails observed in incidents  |
+    | Analytics     | order.created  | yes         | appends to warehouse, dedups nightly    |
+    | Fraud         | order.created  | yes         | 30 s SLA, reads order snapshot from API |
+conversations:
+- name: support-easy-steady
+  system:
+    context: faq
+  expect: level 0 throughout; should stay on one cheap tier with cache hits from turn 2 on
+  turns:
+  - user: Hi! Does Lumen work on a Raspberry Pi?
+    expected_level: [0, 1]
+  - user: Great. Do I need to pay per user if my whole family uses it?
+    expected_level: [0, 1]
+  - user: How do I cancel Plus if I don't like it?
+    expected_level: [0, 1]
+  - user: My iPhone photos show up as broken images on the Ubuntu install. Any idea why?
+    expected_level: [0, 1]
+  - user: And what two things should I back up?
+    expected_level: [0, 1]
+  - user: Thanks, that's everything.
+    expected_level: [0, 1]
+- name: support-escalating
+  system:
+    context: faq
+  expect: starts level 0, climbs to level 2-3 for the algorithm/complexity turns, drops back at the end
+  turns:
+  - user: Is there a free plan?
+    expected_level: [0, 1]
+  - user: I imported Google Takeout but half my albums are empty and dates are wrong on maybe 30% of photos. What
+      went wrong?
+    expected_level: [1, 2]
+  - user: 'Here''s the thing: some Takeout zips had the JSON sidecars named `IMG_1234.jpg.json` and others `IMG_1234(1).json`
+      for duplicates. Walk me through exactly how a robust importer should pair sidecars to media across those naming
+      schemes, including edge cases with truncated names (Google truncates to 51 characters), and propose the matching
+      algorithm with tie-break rules.'
+    expected_level: [2, 3]
+  - user: Write that algorithm as a Python function with type hints and tests for each edge case you listed.
+    expected_level: [2, 3]
+  - user: Now suppose the importer runs across 400k files on a Raspberry Pi. What's the memory/time complexity of
+      your approach and what would you change to keep RAM under 512 MB?
+    expected_level: [2, 3]
+  - user: Okay. Summarize the fix for a non-technical user in two sentences.
+    expected_level: [0, 1]
+- name: code-mid-steady
+  system:
+    context: py_module
+  expect: level 1 throughout; expect a single tier (terra) and rising cache hits as history grows
+  turns:
+  - user: Add a `remaining(key)` method to LRUBuckets that returns the current token count for a key without consuming
+      any, and without creating a bucket if the key is unknown.
+    expected_level: [1, 2]
+  - user: Write pytest tests for `remaining`, using the `now=` parameter so the tests are deterministic.
+    expected_level: [1, 2]
+  - user: SlidingWindow.allow pops from the front of a list, which is O(n). Switch it to collections.deque and keep
+      behaviour identical.
+    expected_level: [1, 2]
+  - user: Add a `reset_all()` to SlidingWindow and LRUBuckets.
+    expected_level: [1, 2]
+  - user: Update the middleware so the rate and capacity can be overridden per-route via a `RATE_LIMITS` dict on
+      the scope's app state, falling back to the defaults.
+    expected_level: [1, 2]
+  - user: Write the CHANGELOG entry for all of the above.
+    expected_level: 1
+  - user: Rename `LRUBuckets` to `KeyedBuckets` everywhere and list every file that changes.
+    expected_level: [1, 2]
+- name: debug-deep-from-start
+  system:
+    context: py_module
+  expect: level 2-3 from turn 1 and stays high; tests that the router does not bounce down mid-task
+  turns:
+  - user: Under load we occasionally see clients being rate limited far earlier than their bucket should allow,
+      and stats() sometimes reports tokens above capacity. Find every concurrency and correctness bug in bucket.py
+      and middleware.py and explain the exact interleaving that causes each symptom. Be rigorous; I want you to
+      reason about the lock scopes line by line.
+    expected_level: [2, 3]
+  - user: For the `time_until` bug, show a minimal two-thread reproduction I can run to demonstrate it.
+    expected_level: [2, 3]
+  - user: Propose a fix that keeps the public API and doesn't hold the global lock while sleeping or doing per-bucket
+      arithmetic for unrelated keys. Consider a per-bucket lock and argue about lock ordering and the eviction race.
+    expected_level: [2, 3]
+  - user: 'Now do a proper review of your own fix: what new failure modes did you introduce?'
+    expected_level: [2, 3]
+  - user: Write the final patch as a unified diff.
+    expected_level: [2, 3]
+- name: agent-tool-loop
+  system:
+    context: py_module
+  expect: tool-result turns should show reason=tool_result on the incumbent; user turns level 1
+  tools:
+  - type: function
+    function:
+      name: run_tests
+      description: Run the test suite and return the summary.
+      parameters:
+        type: object
+        properties:
+          path:
+            type: string
+  - type: function
+    function:
+      name: read_file
+      description: Read a file from the repository.
+      parameters:
+        type: object
+        properties:
+          path:
+            type: string
+        required:
+        - path
+  turns:
+  - user: The tests for SlidingWindow are failing intermittently in CI. Investigate and fix.
+    expected_level: [1, 2]
+  - tool:
+      name: run_tests
+      args:
+        path: tests/test_bucket.py
+      result: |-
+        FAILED tests/test_bucket.py::test_sliding_window_expires - assert False
+        AssertionError: expected allow() True after window elapsed
+        1 failed, 14 passed in 0.31s
+    expected_fastpath: true
+  - tool:
+      name: read_file
+      args:
+        path: tests/test_bucket.py
+      result: |
+        def test_sliding_window_expires():
+            w = SlidingWindow(limit=2, window_s=1.0)
+            assert w.allow('k')
+            assert w.allow('k')
+            assert not w.allow('k')
+            time.sleep(1.0)
+            assert w.allow('k')
+    expected_fastpath: true
+  - user: Right, the test sleeps exactly window_s. Make the test deterministic using the `now=` argument and also
+      make `allow` treat an event exactly at the cutoff as expired.
+    expected_level: [1, 2]
+  - tool:
+      name: run_tests
+      args:
+        path: tests/test_bucket.py
+      result: 15 passed in 0.12s
+    expected_fastpath: true
+  - user: Good. Commit message please, conventional-commits style.
+    expected_level: [0, 1]
+  - user: Also open a follow-up issue describing why time.sleep in tests is a bad idea. Draft the body.
+    expected_level: [0, 1]
+- name: deescalate-after-hard-start
+  system:
+    context: design_memo
+  expect: level 3 for turns 1-2 then trivial; switch-cost + warm cache should keep it on the incumbent for a while
+    rather than bouncing straight to level 0
+  turns:
+  - user: Do a thorough critical review of this memo. Find the flaws in the consistency guarantees, especially around
+      the saga and the payment-capture idempotency question, and say what you would push back on before approving.
+      Structure the answer as a reviewer would.
+    expected_level: [2, 3]
+  - user: Focus on open question 3 (reservation succeeds after payment already failed). Give the exact sequence
+      of events and state transitions and show where the memo's design loses money or strands stock.
+    expected_level: [2, 3]
+  - user: Okay, I'm convinced. Can you turn your top three concerns into short review comments I can paste into
+      the doc?
+    expected_level: [1, 2]
+  - user: Make comment 2 friendlier.
+    expected_level: [0, 1]
+  - user: What's the p99 improvement in the load test, as a percentage?
+    expected_level: [0, 1]
+  - user: Add a one-line TL;DR at the top of your comments.
+    expected_level: [0, 1]
+  - user: Thanks!
+    expected_level: [0, 1]
+- name: complaint-driven-escalation
+  system: You are a writing assistant for a B2B SaaS marketing team. Match the requested tone exactly.
+  expect: level 1 start; two complaints should escalate (reason=quality_complaint) and stick for a bit
+  turns:
+  - user: 'Write a 120-word product update email announcing that our analytics dashboard now supports custom date
+      ranges and CSV export. Audience: existing customers, tone: warm but concise.'
+    expected_level: 1
+  - user: This is too generic and reads like every other SaaS email. Try again and make it specific.
+    expected_level: [1, 2]
+    expected_complaint: true
+  - user: Still not good. You're not thinking about what the reader actually cares about. Rewrite it properly this
+      time, with a concrete example of a workflow the feature unblocks.
+    expected_level: [2, 3]
+    expected_complaint: true
+  - user: Better. Now write the subject line and preview text, three options each.
+    expected_level: [1, 2]
+  - user: Pick the best pair and explain in one sentence why.
+    expected_level: [0, 1]
+  - user: Translate the final email into Spanish (Spain).
+    expected_level: [0, 1]
+- name: math-escalation
+  system: You are a patient mathematics tutor. Use LaTeX for formulas.
+  expect: smooth climb 0 → 1 → 2 → 3 across turns, then a drop on the flashcard turn
+  turns:
+  - user: What is the derivative of x^3?
+    expected_level: [0, 1]
+  - user: And the integral of 1/x?
+    expected_level: [0, 1]
+  - user: Why is the integral of 1/x ln|x| and not just ln(x)?
+    expected_level: [1, 2]
+  - user: Prove that the harmonic series diverges.
+    expected_level: [1, 2]
+  - user: Prove that the sum of 1/p over primes p diverges. Give a complete, rigorous proof, not a sketch.
+    expected_level: [2, 3]
+  - user: Now explain the connection between that result and the Prime Number Theorem, and state precisely what
+      Mertens' second theorem says and how it strengthens what we just proved.
+    expected_level: [2, 3]
+  - user: Give me a one-line summary I can put on a flashcard.
+    expected_level: [0, 1]
+- name: sql-mixed
+  system:
+    context: schema
+  expect: 'alternates: level 0-1 → level 2-3 (NRR) → level 0; look at whether it stays on the expensive tier for
+    the easy tail or comes back down'
+  turns:
+  - user: How many customers do we have per plan?
+    expected_level: [0, 1]
+  - user: List the top 10 countries by number of active subscriptions.
+    expected_level: [0, 1]
+  - user: Compute monthly recurring revenue by calendar month for the last 12 months, counting a subscription in
+      every month it was active for at least one day, and pro-rating nothing.
+    expected_level: [1, 2]
+  - user: 'Net revenue retention by monthly cohort, for cohorts in fiscal year 2025: for each cohort month (by subscription
+      start), the MRR at month 0 and at months 1, 3, 6, 12, expressed as a percentage of month 0. Handle upgrades,
+      downgrades, and churn correctly and explain the definition you chose.'
+    expected_level: [2, 3]
+  - user: That query will scan the events partition for nothing. Do we even need events here? Also review your CTEs
+      for correctness around subscriptions that end on the same day they start.
+    expected_level: [2, 3]
+    expected_complaint: true
+  - user: 'Fine. Now a simple one: how many tickets were opened last week?'
+    expected_level: [0, 1]
+  - user: Give me the churn query as a one-liner for a dashboard tile, no CTEs.
+    expected_level: [0, 1]
+- name: trivial-formatting-steady
+  system: You are a helpful assistant.
+  expect: level 0 throughout; expect luna and zero switches (system prompt is short, so caching only kicks in once
+    the history itself exceeds 1024 tokens)
+  turns:
+  - user: 'Convert this to JSON: name Ada, age 36, city London.'
+    expected_level: [0, 1]
+  - user: Now make the keys uppercase.
+    expected_level: [0, 1]
+  - user: Translate 'good morning, how are you?' into French, German, and Japanese.
+    expected_level: [0, 1]
+  - user: 'Fix the typo: ''The quick brwon fox jumsp over the lazy dog.'''
+    expected_level: [0, 1]
+  - user: 'Sort these numbers ascending: 42, 7, 19, 3, 88, 21.'
+    expected_level: [0, 1]
+  - user: Give me three synonyms for 'happy'.
+    expected_level: [0, 1]
+  - user: What's 15% of 240?
+    expected_level: [0, 1]
+  - user: Thanks.
+    expected_level: [0, 1]
+- name: spiky-alternating
+  system:
+    context: py_module
+  expect: alternates 0 ↔ 3 every turn; tests hysteresis — does it flap between tiers or settle?
+  turns:
+  - user: Rename the `n` parameter in TokenBucket.try_acquire to `amount`.
+    expected_level: [0, 1]
+  - user: 'Prove or disprove: for any sequence of try_acquire calls with n ≤ capacity, TokenBucket never reports
+      more than `capacity + rate * (t_now - t_first)` total tokens acquired over an interval, and derive the tight
+      bound on burst size. Be formal.'
+    expected_level: [2, 3]
+  - user: Add a docstring to SlidingWindow.reset.
+    expected_level: [0, 1]
+  - user: Design a distributed version of LRUBuckets backed by Redis that preserves the same fairness guarantees
+      under partition, including a Lua script for the atomic refill-and-take and an analysis of what happens during
+      a Redis failover with async replication.
+    expected_level: [2, 3]
+  - user: What's the default capacity in the middleware?
+    expected_level: [0, 1]
+  - user: Write a one-paragraph summary of everything we discussed for a PR description.
+    expected_level: [1, 2]
+- name: long-context-analysis
+  system:
+    context: design_memo
+  expect: 'big shared prefix: cache hits should be large from turn 2; levels 1 → 1 → 3 → 2 → 1 → 0'
+  turns:
+  - user: Summarize this memo in five bullets.
+    expected_level: [1, 2]
+  - user: Which phase of the rollout is riskiest and why?
+    expected_level: [1, 2]
+  - user: The memo claims at-least-once delivery plus idempotent consumers gives effectively-once processing. Argue
+      whether that holds for the payment capture step specifically, considering that Payments is an external provider
+      whose API is not idempotent unless we supply a key. Where must the key be generated and persisted so that
+      a crash at every possible point still results in exactly one capture? Enumerate the crash points.
+    expected_level: [2, 3]
+  - user: 'Now write the saga state machine as a table: state, event, next state, side effects, and the compensation
+      on failure. Include the out-of-order case from open question 3.'
+    expected_level: [2, 3]
+  - user: Turn the table into a Mermaid stateDiagram-v2.
+    expected_level: [1, 2]
+  - user: Fix the diagram so 'cancelled' is a terminal state and rename 'reserved' to 'stock_reserved'.
+    expected_level: [0, 1]

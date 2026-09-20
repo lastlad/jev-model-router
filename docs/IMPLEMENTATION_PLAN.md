@@ -1,7 +1,9 @@
 # Jev-powered model router: research findings and implementation plan
 
-Status: proposal, revised 2026-09-18 after decisions below. Nothing in this
-repo is built yet.
+Status: design record. Written 2026-09-18 as a proposal; the router, plugin,
+deployment, and evaluation harness described here are now implemented (see
+the README for the current layout). Sections below are kept as the rationale
+for the design and are not updated for every code change.
 
 ## 0. Decisions taken
 
