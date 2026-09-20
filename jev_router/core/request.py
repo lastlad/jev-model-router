@@ -102,14 +102,23 @@ def _responses_messages(data: dict[str, Any]) -> list[dict[str, Any]]:
 
 def turn_from_data(data: dict[str, Any], call_type: str, token_model: str) -> Turn:
     messages, tools = _openai_messages(data, call_type)
-    system = "\n".join(text_of(m.get("content")) for m in messages if m.get("role") == "system")
-    users = [m for m in messages if m.get("role") == "user"]
-    assistants = [m for m in messages if m.get("role") == "assistant"]
-    last = messages[-1] if messages else {}
+    # Only the leading system messages are the system prompt. Clients on Anthropic's
+    # mid-conversation-system beta (Claude Code) insert per-turn `role: system` entries later in the
+    # history; they change every turn, so they belong to neither the stable prefix nor the identity
+    # of the conversation, and they must not hide the tool result or user message that ends the turn.
+    leading_system: list[dict[str, Any]] = []
+    for m in messages:
+        if m.get("role") != "system":
+            break
+        leading_system.append(m)
+    body = [m for m in messages if m.get("role") != "system"]
+    users = [m for m in body if m.get("role") == "user"]
+    assistants = [m for m in body if m.get("role") == "assistant"]
+    last = body[-1] if body else {}
     turn = Turn(
         messages=messages,
         tools=tools,
-        system_text=system,
+        system_text="\n".join(text_of(m.get("content")) for m in leading_system),
         current_text=text_of(last.get("content")) if last.get("role") == "user" else "",
         first_user_text=text_of(users[0].get("content")) if users else "",
         user=str(data.get("user") or ""),
@@ -118,7 +127,7 @@ def turn_from_data(data: dict[str, Any], call_type: str, token_model: str) -> Tu
         last_assistant_fingerprint=fingerprint_assistant(assistants[-1]) if assistants else None,
     )
     turn.prompt_tokens = _count(token_model, messages, tools)
-    turn.stable_prefix_tokens = _count(token_model, [m for m in messages if m.get("role") == "system"], tools)
+    turn.stable_prefix_tokens = _count(token_model, leading_system, tools)
     return turn
 
 
