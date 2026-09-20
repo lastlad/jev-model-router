@@ -3,6 +3,11 @@ from typing import Any, Protocol
 
 from .config import Tier
 
+# Providers whose prompt cache is keyed on reasoning effort as well as the prefix:
+# a prefix written at one effort misses at another, so an effort-only switch on these
+# providers is a full cache miss.
+EFFORT_KEYED_CACHE_PROVIDERS = frozenset({"openai"})
+
 
 class KV(Protocol):
     async def get(self, key: str) -> Any | None: ...
@@ -72,4 +77,6 @@ class Ledger:
             return 0
         if tier.effort == entry.effort:
             return entry.cached_tokens
+        if (tier.provider or entry.provider) in EFFORT_KEYED_CACHE_PROVIDERS:
+            return 0
         return min(entry.cached_tokens, entry.stable_prefix_tokens)
