@@ -79,7 +79,7 @@ jev_router/eval/               golden-dataset evaluation: runner (live / simulat
 deploy/                        docker-compose, LiteLLM config, router.yaml
 evals/                         datasets and reports for evaluating a router config
 tests/                         unit tests; tests/integration boots a real proxy with mock models
-docs/IMPLEMENTATION_PLAN.md    research findings and design rationale
+docs/IMPLEMENTATION_PLAN_v0.md design record: rationale, decisions, and what the first eval changed
 ```
 
 ## Development

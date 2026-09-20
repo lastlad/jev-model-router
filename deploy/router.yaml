@@ -1,4 +1,4 @@
-# Router configuration. Schema: jev_router/core/config.py. Design: docs/IMPLEMENTATION_PLAN.md.
+# Router configuration. Schema: jev_router/core/config.py. Design: docs/IMPLEMENTATION_PLAN_v0.md.
 #
 # Each turn is scored per tier as  utility = -lambda_cost * cost - lambda_quality * quality_risk - switch_cost
 # and the highest utility wins. All three terms are in US dollars for *this turn*, so keep the constants
