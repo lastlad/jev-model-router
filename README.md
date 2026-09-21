@@ -103,3 +103,7 @@ Two kinds of testing live side by side and should stay separate: `tests/`
 answers "did this change break the router?" with no network and no keys;
 `jev-router eval` answers "how well does this configuration route?" against a
 labelled dataset.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
