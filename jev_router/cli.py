@@ -52,14 +52,18 @@ async def _state(args: argparse.Namespace) -> None:
 async def _eval_run(args: argparse.Namespace) -> None:
     from .eval.dataset import dump_dataset, load_dataset
     from .eval.report import build_report, to_markdown, write_json
-    from .eval.runner import LiveBackend, make_simulate_backend, run_dataset
+    from .eval.runner import ClaudeCodeBackend, LiveBackend, make_simulate_backend, run_dataset
 
     ds = load_dataset(args.dataset).select(args.only)
     if not ds.conversations:
         sys.exit("no conversations selected")
+    alias = load_config(args.config).alias
     if args.mode == "live":
-        alias = load_config(args.config).alias
         backend = LiveBackend(args.base_url, args.api_key, Path(args.decisions), args.max_tokens, model=alias)
+    elif args.mode == "claude-code":
+        backend = ClaudeCodeBackend(
+            args.base_url, args.api_key, Path(args.decisions), alias, args.claude_bin, args.haiku_model, args.workdir
+        )
     else:
         backend = make_simulate_backend(args.config, args.litellm_config)
 
@@ -96,7 +100,7 @@ async def _eval_run(args: argparse.Namespace) -> None:
     md = to_markdown(report)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"{ds.name}-{args.mode}-{result.run_id}"
+    stem = f"{ds.name}-{alias}-{args.mode}-{result.run_id}"
     write_json(report, out_dir / f"{stem}.json")
     (out_dir / f"{stem}.md").write_text(md)
     if args.record:
@@ -140,9 +144,10 @@ def main(argv: list[str] | None = None) -> None:
     run.add_argument("dataset", help="golden dataset YAML")
     run.add_argument(
         "--mode",
-        choices=["simulate", "live"],
+        choices=["simulate", "live", "claude-code"],
         default="simulate",
-        help="simulate: in-process router, real Jev, no model calls (default); live: the proxy at --base-url",
+        help="simulate: in-process router, real Jev, no model calls (default); live: the proxy at --base-url; "
+        "claude-code: drive `claude -p` against the proxy on your claude.ai login (tool steps skipped)",
     )
     run.add_argument("--config", default="deploy/routers/gpt.yaml", help="the router file to evaluate")
     run.add_argument("--litellm-config", default="deploy/config.yaml", help="model_list for pricing (simulate)")
@@ -153,6 +158,9 @@ def main(argv: list[str] | None = None) -> None:
     run.add_argument("--max-tokens", type=int, default=1200)
     run.add_argument("--out-dir", default="evals/reports")
     run.add_argument("--record", help="write a copy of the dataset with live replies pinned as `assistant:`")
+    run.add_argument("--claude-bin", default="claude", help="claude-code mode: the Claude Code executable")
+    run.add_argument("--haiku-model", default="cc-haiku", help="claude-code mode: deployment for background calls")
+    run.add_argument("--workdir", help="claude-code mode: directory Claude Code runs in (default: a temp dir)")
     run.set_defaults(fn=_eval_run)
     pre = ev.add_parser("preflight", help="check every tier accepts its effort and caches, against a live proxy")
     pre.add_argument("--config", default="deploy/routers/gpt.yaml")

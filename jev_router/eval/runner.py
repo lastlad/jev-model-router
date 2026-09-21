@@ -8,6 +8,11 @@ Two backends:
 * ``SimulateBackend`` drives the router core in-process with the real Jev judge, a simulated
   provider prompt cache, and no model calls. Replies are the turn's pinned ``assistant:`` text or a
   placeholder, so record a live run first (``--record``) when Jev's view of the history matters.
+* ``ClaudeCodeBackend`` drives Claude Code itself (``claude -p``, one process per turn, resumed by
+  session id) as the client of a running proxy, so a router meant for Claude Code is evaluated on
+  the requests Claude Code actually sends, on the developer's claude.ai login. Scripted tool steps
+  are skipped: Claude Code runs its own tools, and here tools are disabled so that each dataset
+  turn is exactly one request.
 """
 
 from __future__ import annotations
@@ -15,7 +20,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
+import tempfile
 import time
+import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -60,6 +68,7 @@ class TurnRecord:
     latency_ms: int = 0
     assistant_text: str = ""
     error: str | None = None
+    skipped: bool = False  # the backend could not play this turn (e.g. a scripted tool step under Claude Code)
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -214,6 +223,86 @@ class LiveBackend:
 
 
 # --------------------------------------------------------------------------------------------
+# Claude Code backend
+# --------------------------------------------------------------------------------------------
+
+
+class ClaudeCodeBackend(LiveBackend):
+    """Play each user turn through ``claude -p`` against the proxy, resuming one Claude Code session per
+    conversation. The proxy is authenticated with the LiteLLM key in a custom header; the Anthropic
+    credential is the developer's claude.ai login, exactly as in deploy/claude-code.env."""
+
+    def __init__(
+        self,
+        base_url: str,
+        api_key: str,
+        decisions: Path,
+        model: str,
+        claude_bin: str = "claude",
+        haiku_model: str = "cc-haiku",
+        workdir: str | None = None,
+    ) -> None:
+        super().__init__(base_url, api_key, decisions, model=model)
+        self.claude_bin = claude_bin
+        self.workdir = workdir or tempfile.mkdtemp(prefix="jev-eval-claude-code-")
+        self.sessions: dict[str, str] = {}  # eval session -> Claude Code session uuid
+        env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+        env.update(
+            ANTHROPIC_BASE_URL=base_url,
+            ANTHROPIC_CUSTOM_HEADERS=f"x-litellm-api-key: Bearer {api_key}",
+            ANTHROPIC_MODEL=model,
+            ANTHROPIC_DEFAULT_HAIKU_MODEL=haiku_model,
+        )
+        self.env = env
+        self.target = f"{claude_bin} -p → {base_url} as {model}"
+
+    async def run_turn(
+        self, session: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]], rec: TurnRecord, tier_levels
+    ) -> None:
+        if rec.kind == "tool":
+            rec.skipped = True
+            rec.reason = "skipped"
+            rec.assistant_text = "(tool step not played under Claude Code)"
+            return
+        system = next((m["content"] for m in messages if m.get("role") == "system"), "")
+        user = messages[-1]["content"]
+        cc_session = self.sessions.get(session)
+        args = [
+            self.claude_bin, "-p", user, "--output-format", "json",
+            "--tools", "", "--strict-mcp-config", "--max-turns", "1",
+        ]  # fmt: skip
+        if system:
+            args += ["--append-system-prompt", system]
+        if cc_session:
+            args += ["--resume", cc_session]
+        else:
+            cc_session = self.sessions[session] = str(uuid.uuid4())
+            args += ["--session-id", cc_session]
+        t0 = time.time()
+        proc = await asyncio.create_subprocess_exec(
+            *args, cwd=self.workdir, env=self.env, stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )  # fmt: skip
+        out, err = await proc.communicate()
+        rec.latency_ms = int((time.time() - t0) * 1000)
+        result: dict[str, Any] = {}
+        with contextlib.suppress(json.JSONDecodeError):
+            result = json.loads(out.decode() or "{}")
+        if proc.returncode != 0 or result.get("is_error"):
+            rec.error = (result.get("result") or err.decode().strip().splitlines()[-1:] or ["claude failed"])[0][:200]
+        rec.assistant_text = str(result.get("result") or "") or "(no text output)"
+        rec.model = self.model
+        decision, observed = await self._wait_events(cc_session)
+        if decision:
+            _apply_decision(rec, decision["decision"], tier_levels)
+            rec.jev_ms = decision.get("jev_ms")
+        if observed:
+            rec.prompt_tokens = observed.get("prompt_tokens", 0)
+            rec.cached_tokens = observed.get("cached_tokens", 0)
+            rec.cost = observed.get("cost")
+
+
+# --------------------------------------------------------------------------------------------
 # Simulate backend
 # --------------------------------------------------------------------------------------------
 
@@ -309,7 +398,7 @@ OnTurn = Callable[[ConversationRun, TurnRecord], None]
 
 async def run_dataset(
     ds: Dataset,
-    backend: LiveBackend | SimulateBackend,
+    backend: LiveBackend | SimulateBackend | ClaudeCodeBackend,
     router_config_path: str,
     mode: str,
     on_turn: OnTurn | None = None,
@@ -346,7 +435,7 @@ async def run_dataset(
 async def _run_conversation(
     conv: Conversation,
     run: ConversationRun,
-    backend: LiveBackend | SimulateBackend,
+    backend: LiveBackend | SimulateBackend | ClaudeCodeBackend,
     tier_levels: dict[str, int],
     on_turn: OnTurn | None,
 ) -> None:

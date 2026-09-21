@@ -24,6 +24,10 @@ TYPESAFE_API_KEY=... jev-router eval run evals/datasets/routing-golden.yaml
 make up
 LITELLM_MASTER_KEY=... jev-router eval run evals/datasets/routing-golden.yaml --mode live
 
+# Claude Code as the client: `claude -p` per turn against the proxy, on your claude.ai login. For
+# routers meant for Claude Code (cc-* deployments), this is the only live mode that can authenticate.
+jev-router eval run evals/datasets/routing-golden.yaml --config deploy/routers/claude-code.yaml --mode claude-code
+
 # Options
   --config deploy/routers/gpt.yaml  router file under evaluation (its alias is the model in live mode)
   --only support --only sql          substring filter on conversation names
@@ -61,6 +65,17 @@ It is free and takes seconds, and it reproduces the routing decision exactly, bu
 - cache hit ratios and cost are the router's own model of the provider, not measurements.
 
 Use live runs to validate the cache model and cost; use simulate to iterate on a router file.
+
+### Claude Code mode
+
+`--mode claude-code` runs each user turn as `claude -p … --resume <session>` in a scratch
+directory, with tools and MCP servers disabled so one dataset turn is one request, and the
+conversation's `system` appended to Claude Code's own system prompt. Decisions are matched by
+Claude Code's session id. Expect fewer tier moves than simulate predicts: every request carries
+Claude Code's system prompt, so switching is dearer. Scripted `tool` steps are skipped (Claude
+Code runs its own tools), so `expected_fastpath` labels are not evaluated in this mode; use a
+real Claude Code session and `make logs` to see the fast path. Usage counts against the
+subscription; reported cost is LiteLLM's list price.
 
 ## Datasets
 
