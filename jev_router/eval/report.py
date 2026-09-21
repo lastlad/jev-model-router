@@ -79,7 +79,7 @@ def score_run(result: RunResult) -> dict[str, Any]:
                 down += t.level < prev
                 same += t.level == prev
             prev = t.level
-    fast_expected = [t for t in turns if t.expected_fastpath]
+    fast_expected = [t for t in turns if t.expected_fastpath and not t.skipped]
     fast_hit = sum(1 for t in fast_expected if t.reason == "tool_result")
     detected = [t for t in turns if t.reason == "quality_complaint"]
     expected_c = [t for t in turns if t.expected_complaint]
@@ -93,6 +93,7 @@ def score_run(result: RunResult) -> dict[str, Any]:
         "judged_turns": len(judged),
         "labelled_turns": labelled,
         "errors": sum(1 for t in turns if t.error),
+        "skipped": sum(1 for t in turns if t.skipped),
         "level_accuracy": _pct(verdicts["match"], labelled),
         "over_provision_rate": _pct(verdicts["over"], labelled),
         "under_provision_rate": _pct(verdicts["under"], labelled),
@@ -346,4 +347,6 @@ def _findings(report: dict[str, Any]) -> list[str]:
         )
     if s["errors"]:
         out.append(f"{s['errors']} turn(s) errored.")
+    if s.get("skipped"):
+        out.append(f"{s['skipped']} scripted tool step(s) skipped: this backend does not play them.")
     return out
