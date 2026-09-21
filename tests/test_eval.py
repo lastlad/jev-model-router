@@ -6,6 +6,7 @@ from conftest import TIERS
 from jev_router.core.config import RouterConfig
 from jev_router.core.judge import Judgment, RecordedJudge
 from jev_router.eval.dataset import Dataset, Thresholds, load_dataset
+from jev_router.eval.preflight import SYSTEM as PREFLIGHT_SYSTEM
 from jev_router.eval.report import build_report, check_thresholds, score_run, to_markdown
 from jev_router.eval.runner import ConversationRun, RunResult, SimulateBackend, SimulatedCache, TurnRecord, run_dataset
 
@@ -183,3 +184,10 @@ async def test_simulate_backend_end_to_end(dataset_file):
     report = build_report(result, ds.thresholds)
     assert report["summary"]["fastpath"] == {"expected": 1, "hit": 1}
     assert report["summary"]["complaints"]["true_positive"] == 1
+
+
+def test_preflight_prompt_exceeds_provider_cache_minimums():
+    import litellm
+
+    for model in ("gpt-5.6-luna", "claude-sonnet-5"):
+        assert litellm.token_counter(model=model, text=PREFLIGHT_SYSTEM) >= 1100, model
