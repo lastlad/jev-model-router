@@ -12,7 +12,11 @@ import httpx
 
 from ..core.config import load_config
 
-SYSTEM = "You are a careful assistant. " + ("Answer precisely and concisely. " * 120)
+# Must exceed every provider's caching minimum (1024 tokens on OpenAI and current Claude models),
+# or the second request can never show a cache hit. tests/test_eval.py checks the size.
+SYSTEM = "You are a careful assistant. " + " ".join(
+    f"Rule {i}: answer precisely, cite assumptions, and keep replies concise." for i in range(1, 90)
+)
 
 
 @dataclass
