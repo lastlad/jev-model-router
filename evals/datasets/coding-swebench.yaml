@@ -1,0 +1,233 @@
+name: coding-swebench
+description: 'Ten conversations seeded by real SWE-bench Verified issues, across all four of its human difficulty
+  annotations and five repositories. Each conversation works one issue: root cause, the patch, a regression test,
+  then a trivial turn. Two conversations carry a quality complaint and one carries scripted tool results. Levels
+  follow the four-point Jev scale; the mapping from SWE-bench difficulty is in evals/build_coding_swebench.py. Scores
+  routing decisions only, not issue resolution.'
+thresholds:
+  level_accuracy: 0.5
+  under_provision_rate: 0.15
+  false_complaint_rate: 0.34
+  fastpath_accuracy: 1.0
+  errors: 0
+contexts:
+  django-django-10999: |-
+    You are helping maintain django/django (version 3.0). You do not have the repository checked out in this conversation, so reason from the issue text and your knowledge of the project, and say when you would need to read a file to be sure. Prefer concrete code over description.
+
+    The issue under discussion:
+
+    Fix parse_duration() for some negative durations Description The ​https://docs.djangoproject.com/en/2.1/_modules/django/utils/dateparse/ defines: standard_duration_re = re.compile( r'^' r'(?:(?P<days>-?\d+) (days?, )?)?' r'((?:(?P<hours>-?\d+):)(?=\d+:\d+))?' r'(?:(?P<minutes>-?\d+):)?' r'(?P<seconds>-?\d+)' r'(?:\.(?P<microseconds>\d{1,6})\d{0,6})?' r'$' ) that doesn't match to negative durations, because of the <hours> definition final (lookahead) part does not have '-?' in it. The following will work: r'((?:(?P<hours>-?\d+):)(?=-?\d+:-?\d+))?' (Thanks to Konstantin Senichev for finding the fix.)
+  django-django-11099: |-
+    You are helping maintain django/django (version 3.0). You do not have the repository checked out in this conversation, so reason from the issue text and your knowledge of the project, and say when you would need to read a file to be sure. Prefer concrete code over description.
+
+    The issue under discussion:
+
+    UsernameValidator allows trailing newline in usernames Description ASCIIUsernameValidator and UnicodeUsernameValidator use the regex r'^[\w.@+-]+$' The intent is to only allow alphanumeric characters as well as ., @, +, and -. However, a little known quirk of Python regexes is that $ will also match a trailing newline. Therefore, the user name validators will accept usernames which end with a newline. You can avoid this behavior by instead using \A and \Z to terminate regexes. For example, the validator regex could be changed to r'\A[\w.@+-]+\Z' in order to reject usernames that end with a newline. I am not sure how to officially post a patch, but the required change is trivial - using the regex above in the two validators in contrib.auth.validators.
+  astropy-astropy-7336: |-
+    You are helping maintain astropy/astropy (version 1.3). You do not have the repository checked out in this conversation, so reason from the issue text and your knowledge of the project, and say when you would need to read a file to be sure. Prefer concrete code over description.
+
+    The issue under discussion:
+
+    units.quantity_input decorator fails for constructors with type hinted return value -> None ### Summary I am using the `units.quantity_input` decorator with typing hints for constructors, however when I add the correct return value for the constructor (`None`) then I get an exception, because `None` has no attribute `to`. ### Reproducer The issue can be reproduced with the following file: ``` Python import astropy.units as u class PoC(object): @u.quantity_input def __init__(self, voltage: u.V) -> None: pass if __name__ == '__main__': poc = PoC(1.*u.V) ``` which results in the following error: ``` $ python3 poc.py Traceback (most recent call last): File "poc.py", line 12, in <module> poc = PoC(1.*u.V) File "/usr/lib64/python3.6/site-packages/astropy/utils/decorators.py", line 868, in __init__ func = make_function_with_signature(func, name=name, **wrapped_args) File "/usr/lib64/python3.6/site-packages/astropy/units/decorators.py", line 225, in wrapper return return_.to(wrapped_signature.return_annotation) AttributeError: 'NoneType' object has no attribute 'to' ``` This has been tested on Fedora 27 with python 3.6.3, astropy 2.0.2 and numpy 1.13.3 all from Fedora's repository. ### Workaround The issue can be circumvented by not adding the return type typing hint. Unfortunately, then a static type checker cannot infer that this function returns nothing. ### Possible fix Maybe the decorator could explicitly check whether None is returned and then omit the unit check.
+  astropy-astropy-12907: |-
+    You are helping maintain astropy/astropy (version 4.3). You do not have the repository checked out in this conversation, so reason from the issue text and your knowledge of the project, and say when you would need to read a file to be sure. Prefer concrete code over description.
+
+    The issue under discussion:
+
+    Modeling's `separability_matrix` does not compute separability correctly for nested CompoundModels Consider the following model: ```python from astropy.modeling import models as m from astropy.modeling.separable import separability_matrix cm = m.Linear1D(10) & m.Linear1D(5) ``` It's separability matrix as you might expect is a diagonal: ```python >>> separability_matrix(cm) array([[ True, False], [False, True]]) ``` If I make the model more complex: ```python >>> separability_matrix(m.Pix2Sky_TAN() & m.Linear1D(10) & m.Linear1D(5)) array([[ True, True, False, False], [ True, True, False, False], [False, False, True, False], [False, False, False, True]]) ``` The output matrix is again, as expected, the outputs and inputs to the linear models are separable and independent of each other. If however, I nest these compound models: ```python >>> separability_matrix(m.Pix2Sky_TAN() & cm) array([[ True, True, False, False], [ True, True, False, False], [False, False, True, True], [False, False, True, True]]) ``` Suddenly the inputs and outputs are no longer separable? This feels like a bug to me, but I might be missing something?
+  astropy-astropy-14365: |-
+    You are helping maintain astropy/astropy (version 5.1). You do not have the repository checked out in this conversation, so reason from the issue text and your knowledge of the project, and say when you would need to read a file to be sure. Prefer concrete code over description.
+
+    The issue under discussion:
+
+    ascii.qdp Table format assumes QDP commands are upper case ### Description ascii.qdp assumes that commands in a QDP file are upper case, for example, for errors they must be "READ SERR 1 2" whereas QDP itself is not case sensitive and case use "read serr 1 2". As many QDP files are created by hand, the expectation that all commands be all-caps should be removed. ### Expected behavior The following qdp file should read into a `Table` with errors, rather than crashing. ``` read serr 1 2 1 0.5 1 0.5 ``` ### How to Reproduce Create a QDP file: ``` > cat > test.qdp read serr 1 2 1 0.5 1 0.5 <EOF> > python Python 3.10.9 (main, Dec 7 2022, 02:03:23) [Clang 13.0.0 (clang-1300.0.29.30)] on darwin Type "help", "copyright", "credits" or "license" for more information. >>> from astropy.table import Table >>> Table.read('test.qdp',format='ascii.qdp') WARNING: table_id not specified. Reading the first available table [astropy.io.ascii.qdp] Traceback (most recent call last): ... raise ValueError(f'Unrecognized QDP line: {line}') ValueError: Unrecognized QDP line: read serr 1 2 ``` Running "qdp test.qdp" works just fine. ### Versions Python 3.10.9 (main, Dec 7 2022, 02:03:23) [Clang 13.0.0 (clang-1300.0.29.30)] astropy 5.1 Numpy 1.24.1 pyerfa 2.0.0.1 Scipy 1.10.0 Matplotlib 3.6.3
+  scikit-learn-scikit-learn-10844: |-
+    You are helping maintain scikit-learn/scikit-learn (version 0.20). You do not have the repository checked out in this conversation, so reason from the issue text and your knowledge of the project, and say when you would need to read a file to be sure. Prefer concrete code over description.
+
+    The issue under discussion:
+
+    fowlkes_mallows_score returns RuntimeWarning when variables get too big <!-- If your issue is a usage question, submit it here instead: - StackOverflow with the scikit-learn tag: http://stackoverflow.com/questions/tagged/scikit-learn - Mailing List: https://mail.python.org/mailman/listinfo/scikit-learn For more information, see User Questions: http://scikit-learn.org/stable/support.html#user-questions --> <!-- Instructions For Filing a Bug: https://github.com/scikit-learn/scikit-learn/blob/master/CONTRIBUTING.md#filing-bugs --> #### Description <!-- Example: Joblib Error thrown when calling fit on LatentDirichletAllocation with evaluate_every > 0--> sklearn\metrics\cluster\supervised.py:859 return tk / np.sqrt(pk * qk) if tk != 0. else 0. This line produces RuntimeWarning: overflow encountered in int_scalars when (pk * qk) is bigger than 2**32, thus bypassing the int32 limit. #### Steps/Code to Reproduce Any code when pk and qk gets too big. <!-- Example: ```python from sklearn.feature_extraction.text import CountVectorizer from sklearn.decomposition import LatentDirichletAllocation docs = ["Help I have a bug" for i in range(1000)] vectorizer = CountVectorizer(input=docs, analyzer='word') lda_features = vectorizer.fit_transform(docs) lda_model = LatentDirichletAllocation( n_topics=10, learning_method='online', evaluate_every=10, n_jobs=4, ) model = lda_model.fit(lda_features) ``` If the code is too long, feel free to put it in a public gist and link it in the issue: https://gist.github.com --> #### Expected Results <!-- Example: No error is thrown. Please paste or describe the expected results.--> Be able to calculate tk / np.sqrt(pk * qk) and return a float. #### Actual Results <!-- Please paste or specifically describe the actual output or traceback. --> it returns 'nan' instead. #### Fix I propose to use np.sqrt(tk / pk) * np.sqrt(tk / qk) instead, which gives same result and ensuring not bypassing int32 #### Versions <!-- Please run the following snippet and paste the output below. import platform; print(platform.platform()) import sys; print("Python", sys.version) import numpy; print("NumPy", numpy.__version__) import scipy; print("SciPy", […]
+  django-django-11885: |-
+    You are helping maintain django/django (version 3.1). You do not have the repository checked out in this conversation, so reason from the issue text and your knowledge of the project, and say when you would need to read a file to be sure. Prefer concrete code over description.
+
+    The issue under discussion:
+
+    Combine fast delete queries Description When emulating ON DELETE CASCADE via on_delete=models.CASCADE the deletion.Collector will try to perform fast queries which are DELETE FROM table WHERE table.pk IN .... There's a few conditions required for this fast path to be taken but when this happens the collection logic should combine such queries by table to reduce the number of roundtrips to the database. For example, given the following models class Person(models.Model): friends = models.ManyToManyField('self') class User(models.Model): pass class Entry(models.Model): created_by = models.ForeignKey(User) updated_by = models.ForeignKey(User) Issuing a person.delete() or user.delete() will result in 3 queries of the form DELETE FROM person_friends WHERE from_id = :id DELETE FROM person_friends WHERE to_id = :id DELETE FROM person WHERE id = :id DELETE FROM entry WHERE created_by_id = :id DELETE FROM entry WHERE updated_by = :id DELETRE FROM user WHERE id = :id But both queries (or N queries depending on the number of foreign relationships) can be combined into a single one by using OR DELETE FROM person_friends WHERE from_id = :id OR to_id = :id DELETE FROM person WHERE id = :id DELETE FROM entry WHERE created_by_id = :id OR updated_by = :id DELETE FROM user WHERE id = :id
+  django-django-12708: |-
+    You are helping maintain django/django (version 3.1). You do not have the repository checked out in this conversation, so reason from the issue text and your knowledge of the project, and say when you would need to read a file to be sure. Prefer concrete code over description.
+
+    The issue under discussion:
+
+    Migration crashes deleting an index_together if there is a unique_together on the same fields Description Happens with Django 1.11.10 Steps to reproduce: 1) Create models with 2 fields, add 2 same fields to unique_together and to index_together 2) Delete index_together -> Fail It will fail at django/db/backends/base/schema.py, line 378, in _delete_composed_index(), ValueError: Found wrong number (2) of constraints for as this one will find two constraints, the _uniq and the _idx one. No way to get out of this... The worst in my case is that happened as I wanted to refactor my code to use the "new" (Dj 1.11) Options.indexes feature. I am actually not deleting the index, just the way it is declared in my code. I think there are 2 different points here: 1) The deletion of index_together should be possible alone or made coherent (migrations side?) with unique_together 2) Moving the declaration of an index should not result in an index re-creation
+  sympy-sympy-12489: |-
+    You are helping maintain sympy/sympy (version 1.0). You do not have the repository checked out in this conversation, so reason from the issue text and your knowledge of the project, and say when you would need to read a file to be sure. Prefer concrete code over description.
+
+    The issue under discussion:
+
+    combinatorics.Permutation can't be subclassed properly I stumbled across a subclassing issue with `combinatorics.Permutation`: The object creation is done in `Permutation.__new__`, but internally the function `_af_new` is used (which itself is a reference to the static method `Permutation._af_new`). This method eventually creates the object calling `Basic.__new__(Perm, perm)` (`Perm` is a reference to `Permutation`). In the end, this makes subclassing `Permutation` impossible (besides overriding `Permutation._af_new` as always instances of `Permutation` are returned. An elegant solution would be to stick to Python's instance creation mechanisms, i.e. use classmethods where appropriate (`__new__` is one) and use the mandatory reference to the class (the first argument of a classmethod) the method is called on for instance creation. I'm completely new to sympy development and encountered this issue whilst trying to subclass `Permutation`. Therefore I'm not aware of any side effects changing the instance creation probably has. (I monkeypatched it locally and ran the tests, all succeeded.) Maybe there is a coherent explanation why the implementation is as it is and should not be changed?
+  pydata-xarray-6992: |-
+    You are helping maintain pydata/xarray (version 2022.06). You do not have the repository checked out in this conversation, so reason from the issue text and your knowledge of the project, and say when you would need to read a file to be sure. Prefer concrete code over description.
+
+    The issue under discussion:
+
+    index refactor: more `_coord_names` than `_variables` on Dataset ### What happened? `xr.core.dataset.DataVariables` assumes that everything that is in `ds._dataset._variables` and not in `self._dataset._coord_names` is a "data variable". However, since the index refactor we can end up with more `_coord_names` than `_variables` which breaks a number of stuff (e.g. the repr). ### What did you expect to happen? Well it seems this assumption is now wrong. ### Minimal Complete Verifiable Example ```Python ds = xr.Dataset(coords={"a": ("x", [1, 2, 3]), "b": ("x", ['a', 'b', 'c'])}) ds.set_index(z=['a', 'b']).reset_index("z", drop=True) ``` ### MVCE confirmation - [ ] Minimal example — the example is as focused as reasonably possible to demonstrate the underlying issue in xarray. - [ ] Complete example — the example is self-contained, including all data and the text of any traceback. - [ ] Verifiable example — the example copy & pastes into an IPython prompt or [Binder notebook](https://mybinder.org/v2/gh/pydata/xarray/main?urlpath=lab/tree/doc/examples/blank_template.ipynb), returning the result. - [ ] New issue — a search of GitHub Issues suggests this is not a duplicate. ### Relevant log output ```Python ValueError: __len__() should return >= 0 ``` ### Anything else we need to know? The error comes from here https://github.com/pydata/xarray/blob/63ba862d03c8d0cd8b44d2071bc360e9fed4519d/xarray/core/dataset.py#L368 Bisected to #5692 - which probably does not help too much. ### Environment <details> </details>
+conversations:
+- name: django-django-10999
+  system:
+    context: django-django-10999
+  expect: 'SWE-bench Verified, <15 min fix: issue turns at level 1-1, tests at 1-2, commit message at 0-1'
+  turns:
+  - user: What is the likely root cause, and which modules would you read first to confirm it?
+    expected_level: &id001 [1, 1]
+  - user: Write the fix as a unified diff.
+    expected_level: *id001
+  - user: Write the regression test that would have caught this, and say where it belongs.
+    expected_level: [1, 2]
+  - user: Commit message for that change, conventional-commits style.
+    expected_level: [0, 1]
+- name: django-django-11099
+  system:
+    context: django-django-11099
+  expect: 'SWE-bench Verified, <15 min fix: issue turns at level 1-1, tests at 1-2, commit message at 0-1'
+  turns:
+  - user: What is the likely root cause, and which modules would you read first to confirm it?
+    expected_level: *id001
+  - user: Write the fix as a unified diff.
+    expected_level: *id001
+  - user: Write the regression test that would have caught this, and say where it belongs.
+    expected_level: [1, 2]
+  - user: Commit message for that change, conventional-commits style.
+    expected_level: [0, 1]
+  - user: Thanks, that is what I needed.
+    expected_level: [0, 1]
+- name: astropy-astropy-7336
+  system:
+    context: astropy-astropy-7336
+  expect: 'SWE-bench Verified, <15 min fix: issue turns at level 1-1, tests at 1-2, commit message at 0-1'
+  turns:
+  - user: What is the likely root cause, and which modules would you read first to confirm it?
+    expected_level: *id001
+  - user: Write the fix as a unified diff.
+    expected_level: *id001
+  - user: Write the regression test that would have caught this, and say where it belongs.
+    expected_level: [1, 2]
+  - user: Commit message for that change, conventional-commits style.
+    expected_level: [0, 1]
+- name: astropy-astropy-12907
+  system:
+    context: astropy-astropy-12907
+  expect: 'SWE-bench Verified, 15 min - 1 hour: issue turns at level 1-2, tests at 1-2, commit message at 0-1'
+  turns:
+  - user: What is the likely root cause, and which modules would you read first to confirm it?
+    expected_level: &id002 [1, 2]
+  - user: Write the fix as a unified diff.
+    expected_level: *id002
+  - user: That patch is wrong. It does not handle the case the reporter describes, and it would break callers that
+      rely on the current behaviour. Work through it properly this time.
+    expected_level: *id002
+    expected_complaint: true
+  - user: Write the regression test that would have caught this, and say where it belongs.
+    expected_level: [1, 2]
+  - user: Commit message for that change, conventional-commits style.
+    expected_level: [0, 1]
+- name: astropy-astropy-14365
+  system:
+    context: astropy-astropy-14365
+  expect: 'SWE-bench Verified, 15 min - 1 hour: issue turns at level 1-2, tests at 1-2, commit message at 0-1'
+  turns:
+  - user: What is the likely root cause, and which modules would you read first to confirm it?
+    expected_level: *id002
+  - tool:
+      name: run_tests
+      args:
+        path: tests/
+      result: |-
+        1 failed, 412 passed
+        FAILED tests/test_format.py::test_roundtrip - AssertionError
+    expected_fastpath: true
+  - user: Write the fix as a unified diff.
+    expected_level: *id002
+  - tool:
+      name: run_tests
+      args:
+        path: tests/
+      result: 413 passed in 4.1s
+    expected_fastpath: true
+  - user: Write the regression test that would have caught this, and say where it belongs.
+    expected_level: [1, 2]
+  - user: Commit message for that change, conventional-commits style.
+    expected_level: [0, 1]
+- name: scikit-learn-scikit-learn-10844
+  system:
+    context: scikit-learn-scikit-learn-10844
+  expect: 'SWE-bench Verified, 15 min - 1 hour: issue turns at level 1-2, tests at 1-2, commit message at 0-1'
+  turns:
+  - user: What is the likely root cause, and which modules would you read first to confirm it?
+    expected_level: *id002
+  - user: Write the fix as a unified diff.
+    expected_level: *id002
+  - user: Write the regression test that would have caught this, and say where it belongs.
+    expected_level: [1, 2]
+  - user: Commit message for that change, conventional-commits style.
+    expected_level: [0, 1]
+- name: django-django-11885
+  system:
+    context: django-django-11885
+  expect: 'SWE-bench Verified, 1-4 hours: issue turns at level 2-3, tests at 1-2, commit message at 0-1'
+  turns:
+  - user: What is the likely root cause, and which modules would you read first to confirm it?
+    expected_level: &id003 [2, 3]
+  - user: Write the fix as a unified diff.
+    expected_level: *id003
+  - user: That patch is wrong. It does not handle the case the reporter describes, and it would break callers that
+      rely on the current behaviour. Work through it properly this time.
+    expected_level: *id003
+    expected_complaint: true
+  - user: Write the regression test that would have caught this, and say where it belongs.
+    expected_level: [1, 2]
+  - user: Commit message for that change, conventional-commits style.
+    expected_level: [0, 1]
+- name: django-django-12708
+  system:
+    context: django-django-12708
+  expect: 'SWE-bench Verified, 1-4 hours: issue turns at level 2-3, tests at 1-2, commit message at 0-1'
+  turns:
+  - user: What is the likely root cause, and which modules would you read first to confirm it?
+    expected_level: *id003
+  - user: Write the fix as a unified diff.
+    expected_level: *id003
+  - user: Write the regression test that would have caught this, and say where it belongs.
+    expected_level: [1, 2]
+  - user: Commit message for that change, conventional-commits style.
+    expected_level: [0, 1]
+- name: sympy-sympy-12489
+  system:
+    context: sympy-sympy-12489
+  expect: 'SWE-bench Verified, 1-4 hours: issue turns at level 2-3, tests at 1-2, commit message at 0-1'
+  turns:
+  - user: What is the likely root cause, and which modules would you read first to confirm it?
+    expected_level: *id003
+  - user: Write the fix as a unified diff.
+    expected_level: *id003
+  - user: Write the regression test that would have caught this, and say where it belongs.
+    expected_level: [1, 2]
+  - user: Commit message for that change, conventional-commits style.
+    expected_level: [0, 1]
+  - user: Thanks, that is what I needed.
+    expected_level: [0, 1]
+- name: pydata-xarray-6992
+  system:
+    context: pydata-xarray-6992
+  expect: 'SWE-bench Verified, >4 hours: issue turns at level 3-3, tests at 1-2, commit message at 0-1'
+  turns:
+  - user: What is the likely root cause, and which modules would you read first to confirm it?
+    expected_level: &id004 [3, 3]
+  - user: 'Be rigorous: enumerate every invariant this code is supposed to hold, show which one the issue violates,
+      and prove that your proposed change restores it without weakening the others.'
+    expected_level: [2, 3]
+  - user: Write the fix as a unified diff.
+    expected_level: *id004
+  - user: Write the regression test that would have caught this, and say where it belongs.
+    expected_level: [1, 2]
+  - user: Commit message for that change, conventional-commits style.
+    expected_level: [0, 1]

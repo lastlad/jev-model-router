@@ -92,9 +92,18 @@ message or a scripted `tool` result. Labels are optional per turn:
   assistant: (pinned reply)     # optional; used instead of the live reply
 ```
 
+Make the ranges of a difficulty scale **not overlap**. Ranges that share a level, such as `[1, 2]`
+and `[2, 3]`, cannot measure discrimination: one tier satisfies both, so a router that serves every
+turn at level 2 scores as correct on all of them.
+
 `thresholds` at the top level gate the exit code: `level_accuracy` and `fastpath_accuracy` are
 minimums, `under_provision_rate`, `over_provision_rate`, `false_complaint_rate`, `cost_usd`,
 `jev_p95_ms` and `errors` are maximums.
+
+`coding-swebench.yaml` has ten conversations seeded by real SWE-bench Verified issues, with levels
+mapped from that benchmark's human difficulty annotations; `evals/build_coding_swebench.py` pins the
+instance ids and rebuilds it. It scores routing only. A resolution rate needs SWE-bench's own
+harness, which checks out the repository, applies the patch and runs the tests.
 
 `routing-golden.yaml` has twelve conversations: steady trivial/routine/deep work, an agent tool
 loop, genuine complaints, escalation, de-escalation, spiky difficulty and a long shared prefix.
