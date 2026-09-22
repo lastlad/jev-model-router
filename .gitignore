@@ -6,3 +6,4 @@ __pycache__/
 deploy/.env
 deploy/logs/
 evals/reports/
+.swebench_verified.json
